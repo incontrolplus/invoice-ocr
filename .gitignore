@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+results/
+debug/
+*.egg-info/
+debug_*.txt
+test_script.py
