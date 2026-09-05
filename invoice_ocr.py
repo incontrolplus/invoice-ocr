@@ -182,6 +182,8 @@ SUMMARY_KEYWORDS: list[str] = [
     "за плащане", "обща сума", "крайна сума", "словом",
     "итого", "с думи", "общо нето", "око нето", "общо ддс", "всичко общо",
     "сума за плащане", "всичко за плащане", "общо с ддс", "всичко с ддс",
+    "всичко:", "всичко :", "общо:", "общо :", "стойност на сделката",
+    "начин на плащане", "дата на данъчното събитие", "данъчно събитие", "място на сделката",
 ]
 
 # Supplier/recipient detection keywords
@@ -718,6 +720,13 @@ def parse_money(raw: str) -> Decimal | None:
     # Note: \b word boundaries don't work with Cyrillic, so we use explicit
     # patterns without word-boundary anchors.
     cleaned = raw.strip()
+
+    # Handle Euro glyph artifacts common in Bulgarian invoicing software (e.g. Microinvest Sklad Pro)
+    # where the € symbol glyph maps to '6', 'e', 'E', or '€' after 2 decimal digits:
+    # e.g. "274,426" -> "274,42", "82.386" -> "82.38", "238,11 6" -> "238,11", "204 746" -> "204.74"
+    cleaned = re.sub(r'(\d+[,.]\d{2})\s*[6eE€]\b', r'\1', cleaned)
+    cleaned = re.sub(r'(\d+)\s+(\d{2})[6eE€]\b', r'\1.\2', cleaned)
+
     cleaned = re.sub(
         r'(?i)лв\.?|лева|bgn|eur|евро|евроцент\w*|€', '', cleaned,
     )
@@ -760,23 +769,22 @@ def parse_money(raw: str) -> Decimal | None:
             # Format: 1,234.56 (Anglo)
             cleaned = cleaned.replace(',', '')
     elif last_comma != -1:
-        # Only commas
+        # In Bulgarian accounting, comma is always decimal separator (e.g. 30,00, 1234,56).
+        # Multi-comma only occurs in Anglo thousands (e.g. 1,234,567).
         after_comma = len(cleaned) - 1 - last_comma
         comma_count = cleaned.count(',')
-        if after_comma <= 2 and comma_count == 1:
-            # "30,00" or "1234,56" — comma is decimal separator
+        if comma_count > 1:
+            cleaned = cleaned.replace(',', '')
+        elif after_comma <= 2:
             cleaned = cleaned.replace(',', '.')
-        elif after_comma == 3 and comma_count >= 1:
-            # Could be thousands separator (e.g. "1,234") — but ambiguous
-            # If there are multiple commas, they are thousands: "1,234,567"
-            if comma_count > 1:
-                cleaned = cleaned.replace(',', '')
+        elif after_comma == 3:
+            # If comma is followed by 3 digits and number is small (< 10000), e.g. 1,234 or 0,125:
+            # In Bulgarian it's decimal. Anglo thousands applies for larger numbers without decimal.
+            if last_comma <= 2:
+                cleaned = cleaned.replace(',', '.')
             else:
-                # Single comma with 3 digits after — ambiguous, treat as
-                # thousands by default (conservative: 1,234 → 1234)
                 cleaned = cleaned.replace(',', '')
         else:
-            # Fallback: treat comma as decimal
             cleaned = cleaned.replace(',', '.')
     else:
         # Only dots
@@ -1549,8 +1557,12 @@ def score_token_quality(t: OcrToken) -> float:
         score += 25.0
 
     # Valid monetary amount pattern
-    if re.search(r'^\d+([.,]\d{2})?$', t.text):
-        score += 15.0
+    if re.search(r'^\d+[.,]\d{2}$', t.text):
+        score += 25.0
+    elif re.search(r'^\d{1,5}$', t.text):
+        score += 10.0
+    elif re.fullmatch(r'\d{6,}', t.text):
+        score -= 20.0
 
     # Valid EIK or VAT ID pattern
     if re.search(r'^\d{9}$|^\d{13}$|^BG\d{9,13}$', t.text, re.IGNORECASE):
@@ -2101,9 +2113,9 @@ def _is_summary_line(line: LogicalLine) -> bool:
     text = line.text_lower.strip()
     if any(kw in text for kw in SUMMARY_KEYWORDS):
         return True
-    if re.search(r'\b(?:общо|всичко)\s*(?:нето|ддс|с\s+ддс|за\s+плащане|словом)\b', text):
+    if re.search(r'\b(?:общо|всичко)\s*(?:нето|ддс|с\s+ддс|за\s+плащане|словом|:|=)\b', text):
         return True
-    if re.search(r'^\s*(?:общо|всичко)\s*[:=]\s*\d', text):
+    if re.search(r'^\s*(?:общо|всичко)\s*[:=]?\s*\d', text):
         return True
     return False
 
@@ -2297,7 +2309,7 @@ def detect_table_regions(
                     data_lines: list[LogicalLine] = []
                     start_data_idx = i + window_size
                     for d_line in page_lines[start_data_idx:]:
-                        if _is_summary_line(d_line) and d_line.bottom > int(0.50 * p_h):
+                        if _is_summary_line(d_line):
                             break
                         if is_transfer_or_header_line(d_line):
                             continue
@@ -2320,7 +2332,7 @@ def detect_table_regions(
         if not header_found and primary_columns is not None and len(tables) > 0:
             data_lines = []
             for d_line in page_lines:
-                if _is_summary_line(d_line) and d_line.bottom > int(0.50 * p_h):
+                if _is_summary_line(d_line):
                     break
                 if is_transfer_or_header_line(d_line):
                     continue
@@ -2414,42 +2426,89 @@ def extract_invoice_number(
     """Extract the invoice number using regex and keyword proximity.
 
     Searches for patterns like ``Фактура № 1234``, ``Фактура No 1234``,
-    ``Invoice 1234``, ``Номер: 1234``.
+    ``Invoice 1234``, ``Номер: 1234``, ``Мо: 1234``, ``А/о 1234``.
 
     Guards against OCR/fusion duplicates by capping digit run length
     and deduplicating symmetric repeats (e.g. '11001245851100124585').
     """
-    # Work line-by-line first — more reliable than full-text join
+    def _clean_and_dedup(raw: str) -> str | None:
+        clean = re.sub(r'\s+', '', raw)
+        # Drop leading single Cyrillic 'з' or 'З' if followed by 9-10 digits (common OCR artifact for '3')
+        if re.fullmatch(r'[зЗ]\d{9,10}', clean):
+            clean = clean[1:]
+        clean = _dedup_invoice_number(clean)
+        # Avoid matching EIK numbers (if exactly 9 digits and not part of 10-digit invoice)
+        if len(clean) >= 5 and clean.isdigit():
+            if len(clean) == 10:
+                return clean
+            elif 5 <= len(clean) < 10:
+                return clean.zfill(10)
+            elif len(clean) > 10:
+                # Some barcodes concatenate '10000' with 10-digit invoice number (e.g. 100001000358400)
+                if clean.startswith("10000") and len(clean) == 15:
+                    return clean[5:]
+                return None
+        return clean if clean else None
+
+    # Line patterns including Bulgarian variations
+    line_patterns = [
+        r'(?i)(?:фактура|invoice)\s*(?:[№#]|no\.?|номер|мо\.?|хо\.?|a/o)?\s*[:./\"\'“\-]*\s*([зЗ]?\d{4,6}\s*\d{4,7})',
+        r'(?i)(?:номер|мо|мо:|хо|хо:|а/о|a/o|no|no:|n/o)\s*[:./\"\'“\-]*\s*([зЗ]?\d{4,6}\s*\d{4,7})',
+        r'(?i)[№#]\s*[:./\"\'“\-]*\s*([зЗ]?\d{4,6}\s*\d{4,7})',
+    ]
+
+    # Work line-by-line first
     for line in lines:
         text = line.text
-        for pattern in [
-            r'(?i)(?:фактура|invoice)\s*(?:№|no|N|#|номер)?\s*[:./-]?\s*(\d{4,15})',
-            r'(?i)номер\s*[:./-]?\s*(\d{4,15})',
-        ]:
+        for pattern in line_patterns:
             m = re.search(pattern, text)
             if m:
-                number = re.sub(r'\s', '', m.group(1))
-                return _dedup_invoice_number(number)
+                res = _clean_and_dedup(m.group(1))
+                if res:
+                    return res
+
+    # Check two consecutive lines (e.g. line 1 has "Номер:", line 2 has "3000017826")
+    for i in range(len(lines) - 1):
+        t1 = lines[i].text.strip().lower()
+        if re.search(r'(?i)\b(?:номер|фактура|мо|хо|№|no|invoice)\b\s*[:./\"\'“\-]*$', t1):
+            t2 = lines[i+1].text.strip()
+            m = re.search(r'^[:./\"\'“\-]*\s*([зЗ]?\d{4,6}\s*\d{4,7})\b', t2)
+            if m:
+                res = _clean_and_dedup(m.group(1))
+                if res:
+                    return res
 
     # Fallback: search across all tokens
     full_text = " ".join(t.text for t in tokens)
-    for pattern in [
-        r'(?i)(?:фактура|invoice)\s*(?:№|no|N|#|номер)?\s*[:./-]?\s*(\d{4,15})',
-        r'(?i)номер\s*[:./-]?\s*(\d{4,15})',
-        r'(?i)№\s*(\d{4,15})',
-    ]:
+    for pattern in line_patterns:
         m = re.search(pattern, full_text)
         if m:
-            number = re.sub(r'\s', '', m.group(1))
-            return _dedup_invoice_number(number)
+            res = _clean_and_dedup(m.group(1))
+            if res:
+                return res
 
-    # Last resort: look for lines containing „фактура" with a nearby long number
+    # Standalone 10-digit statutory number or barcode in upper 35% of document
+    upper_tokens = [t for t in tokens if t.top < 1300]
+    for t in upper_tokens:
+        clean_t = re.sub(r'[^\d]', '', t.text)
+        if len(clean_t) == 15 and clean_t.startswith("10000"):
+            return clean_t[5:]
+        if len(clean_t) == 10 and clean_t.isdigit():
+            # Standard statutory invoice ranges: 0xxxxxxxx, 1xxxxxxxx, 2xxxxxxxx, 3xxxxxxxx
+            if clean_t[0] in "0123":
+                res = _clean_and_dedup(clean_t)
+                if res:
+                    return res
+
+    # Last resort: lines containing "фактура" with a nearby long number
     for line in lines:
         text_lower = line.text.lower() if hasattr(line, 'text') else ""
         if "фактура" in text_lower or "invoice" in text_lower:
-            nums = re.findall(r'\d{4,15}', line.text)
+            nums = re.findall(r'\d{5,15}', line.text)
             if nums:
-                return _dedup_invoice_number(nums[0])
+                res = _clean_and_dedup(nums[0])
+                if res:
+                    return res
 
     return None
 
@@ -2477,10 +2536,10 @@ def extract_dates(lines: list[LogicalLine]) -> tuple[str | None, str | None]:
     date_issued: str | None = None
     date_tax_event: str | None = None
 
-    issue_keywords = ["дата на издаване", "дата на фактурата", "дата:", "date"]
+    issue_keywords = ["дата на издаване", "дата на фактурата", "дата:", "date", "от дата", "дата "]
     tax_keywords = [
         "данъчно събитие", "дата на доставка", "дата на данъчно",
-        "данъчно", "доставка",
+        "данъчно", "доставка", "датана данъчно", "дан.събитие", "дан. събитие", "събитис"
     ]
 
     for line in lines:
@@ -2506,6 +2565,13 @@ def extract_dates(lines: list[LogicalLine]) -> tuple[str | None, str | None]:
             date_issued = parsed
         elif date_tax_event is None:
             date_tax_event = parsed
+
+    # Statutory fallback: if only one date is found on the document,
+    # under Bulgarian VAT law (ЗДДС чл. 114), date_issued defaults to date_tax_event
+    if date_issued is None and date_tax_event is not None:
+        date_issued = date_tax_event
+    elif date_tax_event is None and date_issued is not None:
+        date_tax_event = date_issued
 
     return date_issued, date_tax_event
 
@@ -2727,7 +2793,8 @@ def extract_party(
     skip_patterns = re.compile(
         r'(?i)(?:доставчик|получател|продавач|купувач|клиент|'
         r'supplier|recipient|ЕИК|Булстат|ДДС|VAT|МОЛ|Адрес|'
-        r'IBAN|BIC|банка|ул\.|бул\.|ж\.к\.)',
+        r'IBAN|BIC|банка|ул\.|бул\.|ж\.к\.|идент|идент\.|'
+        r'град|гр\.|тел\.|телефон|факс)',
     )
     for line in region:
         text = line.text.strip()
@@ -2736,12 +2803,14 @@ def extract_party(
         if text.lower() in PARTY_NAME_EXCLUDE:
             continue
         if skip_patterns.search(text):
-            m = re.search(r'(?:доставчик|получател|продавач|купувач)\s*[:./-]?\s*(.+)', text, re.I)
+            m = re.search(r'(?:[гГ]?доставчик|[пП]?получател|продавач|купувач)\s*[:./\-]?\s*(.+)', text, re.I)
             if m:
                 name_candidate = m.group(1).strip().strip('„""\'')
-                if len(name_candidate) >= 3 and name_candidate.lower() not in PARTY_NAME_EXCLUDE:
-                    party.name = name_candidate
-                    break
+                if len(name_candidate) >= 3 and name_candidate.lower() not in PARTY_NAME_EXCLUDE and not re.fullmatch(r'[:./\-]+', name_candidate):
+                    name_candidate = re.sub(r'(?i)\s*(?:ЕИК|Булстат|ДДС|Адрес).*', '', name_candidate).strip()
+                    if len(name_candidate) >= 3:
+                        party.name = name_candidate
+                        break
             continue
         party.name = text.strip('„"“”\'')
         break
@@ -2801,6 +2870,8 @@ def extract_line_items(
         page_num = getattr(table, "page_number", 1)
 
         for row_line in table.data_lines:
+            if _is_summary_line(row_line):
+                break
             # Skip transfer / carry-forward or repeated column headers
             if is_transfer_or_header_line(row_line):
                 continue
@@ -2863,6 +2934,7 @@ def extract_line_items(
                     if prev_item.bbox and row_line.bbox:
                         prev_item.bbox = _union_bbox(prev_item.bbox, row_line.bbox)
                     continue
+
 
             # Skip empty rows (no numbers and no description) - even if they have an index code
             if qty is None and price is None and total is None and not desc:
@@ -2953,6 +3025,7 @@ def extract_line_items(
 def extract_financial_summary(
     lines: list[LogicalLine],
     tokens: list[OcrToken],
+    line_items: list[LineItem] | None = None,
 ) -> FinancialSummary:
     """Extract tax base, VAT amount, and total from the invoice summary section.
 
@@ -2963,76 +3036,187 @@ def extract_financial_summary(
     summary = FinancialSummary()
 
     tax_base_kws = [
-        "данъчна основа", "дан. основа", "данъчна", "tax base",
-        "данъчнаоснова", "основа",
+        "данъчна основа", "дан. основа", "дан основа", "дан.основа",
+        "данъчнаоснова", "tax base", "основа 20", "основа 9", "основа 0", "основа:",
+    ]
+    tax_base_exclude = [
+        "събитие", "дата", "ставка", "номер", "адрес", "ин по зддс", "ин по ддс", "зддс"
     ]
     vat_kws = [
         "начислен ддс", "ддс 20", "ддс 9", "ддс:", "данък добавена стойност",
         "дължим ддс", "vat amount", "стойност на ддс", "ддс #",
+        "данъчна ставка 20", "данъчна ставка", "ставка 20", "ставка 9",
+        "20% ддс", "2096 ддс", "20%ддс", "20906 ддс", "ддс ставка", "ставка:"
     ]
-    total_kws = [
-        "за плащане", "обща сума", "крайна сума", "всичко",
-        "общо дължимо", "total due", "сума за плащане", "общо:", "сумазаплащане",
+    vat_exclude = [
+        "ин по зддс", "ин по ддс", "инпо по ддс", "по ддс", "зддс", "ддс номер", "ддс №", "ддсномер", "ддсме", "ддс ме", "номер", "еик", "булстат",
     ]
+    specific_total_kws = [
+        "сума за плащане", "сумазаплащане", "за плащане", "общо дължимо", "total due", "крайна сума"
+    ]
+    generic_total_kws = [
+        "всичко", "обща сума", "общо:", "сума за", "сума:", "стойност:"
+    ]
+    header_exclude = [
+        "доставчик", "получател", "ин по зддс", "ин по ддс", "инпо по ддс", "по ддс", "зддс", "ддс номер", "ддс №", "ддсномер",
+        "дщсномер", "дщс номер", "ддснамер", "ддс намер", "клиент"
+    ]
+
+    CURRENCY_GLYPHS = {
+        '6', 'e', 'е', 'E', 'Е', '€', 'лв', 'лв.', 'bgn', 'eur', 'b',
+        '|', '¦', '!', '#', '§', '>', '<', ':', '-', '“', '„', '"'
+    }
 
     def _extract_rightmost_money(line: LogicalLine) -> Decimal | None:
         """Extract the rightmost monetary value from a line.
 
-        Filters out implausibly large values (> 10M) which are likely
+        Filters out implausibly large values (> 500k) which are likely
         identifiers (EIK, account numbers) misinterpreted as amounts.
+        Prefers values with explicit 2-decimal digits over bare integers.
         """
-        MAX_PLAUSIBLE = Decimal("10000000")  # 10 million
-        best_val: Decimal | None = None
-        best_x: int = -1
-        for token in line.tokens:
+        MAX_PLAUSIBLE = Decimal("500000")  # 500 thousand
+        sorted_tokens = sorted(line.tokens, key=lambda tok: tok.center_x, reverse=True)
+        # First pass: prefer tokens with explicit 2-decimal digits
+        for token in sorted_tokens:
             raw = token.text.strip()
-            # Skip tokens that look like identifiers (9+ digits, no separator)
-            if re.fullmatch(r'\d{9,}', raw):
+            if not raw or raw.lower() in CURRENCY_GLYPHS:
+                continue
+            if re.fullmatch(r'\d{8,}', raw):
+                continue
+            if re.search(r'\d+[.,]\d{2}', raw):
+                val = parse_money(raw)
+                if val is not None and abs(val) <= MAX_PLAUSIBLE:
+                    return val
+        # Second pass: fallback to any valid monetary value
+        for token in sorted_tokens:
+            raw = token.text.strip()
+            if not raw or raw.lower() in CURRENCY_GLYPHS:
+                continue
+            if re.fullmatch(r'\d{8,}', raw):
                 continue
             val = parse_money(raw)
-            if val is not None and abs(val) <= MAX_PLAUSIBLE and token.center_x > best_x:
-                best_val = val
-                best_x = token.center_x
-        return best_val
+            if val is not None and abs(val) <= MAX_PLAUSIBLE:
+                return val
+        return None
 
     # Track which lines have been matched to avoid double-assignment
     matched_lines: set[int] = set()
+    total_match_kind: str | None = None
 
     # First pass: keyword matching
     for i, line in enumerate(lines):
         text = line.text_lower
 
+        # Skip company header / party registration lines
+        if any(h in text for h in header_exclude):
+            continue
+        # Skip lines with 9/10-digit VAT registration numbers
+        if re.search(r'\b[a-zа-я]{0,3}\d{9,10}\b', text, re.IGNORECASE):
+            continue
+
+        # Skip statutory VAT exemption basis notes (unless this row actually states a VAT rate like 20% or 9%)
+        is_exemption_basis = ("неначисляване" in text or "основание за" in text) and not any(r in text for r in ["ставка 20", "ставка 9", "20%", "20 ", "ддс ставка"])
+
+        has_tb = (any(kw in text for kw in tax_base_kws) or ("данъчна" in text and "основа" in text)) and not any(ex in text for ex in tax_base_exclude)
+        has_vat = (
+            any(kw in text for kw in vat_kws)
+            or ("ставка" in text and any(r in text for r in ["20", "9", "0"]))
+            or ("ддс" in text and any(r in text for r in ["20", "9", "0"]))
+            or ("ддс" in text and "%" not in text)
+        ) and not any(ex in text for ex in vat_exclude) and not is_exemption_basis
+        has_specific_total = any(kw in text for kw in specific_total_kws) or ("сума" in text and "плащане" in text and "в брой" not in text)
+        has_generic_total = any(kw in text for kw in generic_total_kws)
+
+        # 1. Check if line contains both total and VAT keywords (e.g. single-row total+VAT)
+        if (has_specific_total or has_generic_total) and has_vat and i not in matched_lines and summary.total_amount_due.amount is None:
+            money_tokens = []
+            for tok in sorted(line.tokens, key=lambda t: t.center_x):
+                raw = tok.text.strip()
+                if raw and raw.lower() not in CURRENCY_GLYPHS and not re.fullmatch(r'\d{8,}', raw):
+                    if raw in {"20", "20%", "20.00%", "20.00", "2000:", "2090:", "9", "9%", "0", "0%"}:
+                        continue
+                    val = parse_money(raw)
+                    if val is not None and Decimal("0.01") <= abs(val) <= Decimal("500000"):
+                        money_tokens.append(val)
+            dec_tokens = [v for v in money_tokens if re.search(r'[.,]\d{2}', str(v))]
+            chosen = dec_tokens if len(dec_tokens) >= 2 else money_tokens
+            if len(chosen) >= 2:
+                summary.total_amount_due.amount = max(chosen)
+                total_match_kind = "specific" if has_specific_total else "generic"
+                if summary.vat_amount.amount is None:
+                    summary.vat_amount.amount = min(chosen)
+                matched_lines.add(i)
+                continue
+
+        # 2. Check if line contains both tax base and VAT keywords (e.g. single-row summary)
+        if has_tb and has_vat and i not in matched_lines:
+            money_tokens = []
+            for tok in sorted(line.tokens, key=lambda t: t.center_x):
+                raw = tok.text.strip()
+                if raw and raw.lower() not in CURRENCY_GLYPHS and not re.fullmatch(r'\d{8,}', raw):
+                    if raw in {"20", "20%", "20.00%", "20.00", "2000:", "2090:", "206", "096", "9", "9%", "0", "0%"}:
+                        continue
+                    val = parse_money(raw)
+                    if val is not None and Decimal("0.01") <= abs(val) <= Decimal("500000"):
+                        money_tokens.append(val)
+            # Deduplicate adjacent duplicates
+            unique_money = []
+            for m in money_tokens:
+                if not unique_money or unique_money[-1] != m:
+                    unique_money.append(m)
+            dec_tokens = [v for v in unique_money if re.search(r'[.,]\d{2}', str(v))]
+            chosen = dec_tokens if len(dec_tokens) >= 2 else unique_money
+            if len(chosen) >= 2:
+                summary.tax_base.amount = chosen[-2]
+                summary.vat_amount.amount = chosen[-1]
+                matched_lines.add(i)
+                continue
+
+        # 3. Standard total check (specific keywords take precedence over generic ones)
         if i not in matched_lines:
-            if any(kw in text for kw in total_kws):
+            if has_specific_total:
+                val = _extract_rightmost_money(line)
+                if val is not None:
+                    if total_match_kind == "generic":
+                        # Promote previously matched generic total to tax_base if empty
+                        if summary.tax_base.amount is None:
+                            summary.tax_base.amount = summary.total_amount_due.amount
+                    summary.total_amount_due.amount = val
+                    total_match_kind = "specific"
+                    matched_lines.add(i)
+                    continue
+            elif has_generic_total and summary.total_amount_due.amount is None:
                 val = _extract_rightmost_money(line)
                 if val is not None:
                     summary.total_amount_due.amount = val
+                    total_match_kind = "generic"
                     matched_lines.add(i)
                     continue
 
         if i not in matched_lines:
-            if any(kw in text for kw in tax_base_kws):
+            if any(kw in text for kw in tax_base_kws) and not any(ex in text for ex in tax_base_exclude):
                 val = _extract_rightmost_money(line)
                 if val is not None:
                     summary.tax_base.amount = val
                     matched_lines.add(i)
                     continue
 
-        # ДДС matching — be careful not to match "ДДС %" in table headers
+        # ДДС matching — be careful not to match "ДДС %" in table headers or VAT registration IDs
         if i not in matched_lines:
-            if any(kw in text for kw in vat_kws):
+            if any(kw in text for kw in vat_kws) and not any(ex in text for ex in vat_exclude) and not is_exemption_basis:
                 val = _extract_rightmost_money(line)
                 if val is not None:
                     summary.vat_amount.amount = val
                     matched_lines.add(i)
                     continue
             # Simpler ДДС match but only in the summary section
-            # (after table data, where "ддс" is followed by a number)
-            if "ддс" in text and "%" not in text and i not in matched_lines:
-                val = _extract_rightmost_money(line)
-                if val is not None and summary.vat_amount.amount is None:
-                    summary.vat_amount.amount = val
-                    matched_lines.add(i)
+            # (after table data, where "ддс" is followed by a number, excluding registration IDs)
+            if "ддс" in text and "%" not in text and i not in matched_lines and not is_exemption_basis:
+                if not any(ex in text for ex in vat_exclude):
+                    val = _extract_rightmost_money(line)
+                    if val is not None and summary.vat_amount.amount is None:
+                        summary.vat_amount.amount = val
+                        matched_lines.add(i)
 
     # Second pass: if total is still missing, look for the keyword "общо"
     # on lines that might have been skipped
@@ -3041,6 +3225,8 @@ def extract_financial_summary(
             if i in matched_lines:
                 continue
             text = line.text_lower
+            if any(h in text for h in header_exclude):
+                continue
             if "общо" in text:
                 val = _extract_rightmost_money(line)
                 if val is not None:
@@ -3053,43 +3239,81 @@ def extract_financial_summary(
     tb = summary.tax_base.amount
 
     if t is not None and v is not None and tb is not None:
-        if abs(tb + v - t) > TOTAL_TOLERANCE:
-            derived_tb = t - v
-            valid_tb = False
-            if derived_tb > 0:
-                rate1 = v / derived_tb
-                if abs(rate1 - Decimal("0.20")) < Decimal("0.02") or abs(rate1 - Decimal("0.09")) < Decimal("0.02"):
-                    valid_tb = True
+        # Check if tax base and VAT were extracted in reverse order (tb < v with ~20% or ~9% ratio)
+        if tb > 0 and v > 0 and tb < v:
+            swapped_rate = tb / v
+            if abs(swapped_rate - Decimal("0.20")) < Decimal("0.02") or abs(swapped_rate - Decimal("0.09")) < Decimal("0.02"):
+                logger.warning("Cross-validation: swapping inverted tax_base (%s) and vat_amount (%s)", tb, v)
+                summary.tax_base.amount, summary.vat_amount.amount = v, tb
+                tb, v = v, tb
 
+        if abs(tb + v - t) > TOTAL_TOLERANCE:
+            # Check Pair 1: tb and v confirm each other (e.g. rate == 20% or 9%)
+            valid_pair_1 = False
+            if tb > 0 and v > 0:
+                rate1 = v / tb
+                if abs(rate1 - Decimal("0.20")) < Decimal("0.02") or abs(rate1 - Decimal("0.09")) < Decimal("0.02"):
+                    valid_pair_1 = True
+
+            # Check Pair 2: t and tb confirm each other
+            valid_pair_2 = False
             derived_v = t - tb
-            valid_v = False
-            if tb > 0:
+            if tb > 0 and derived_v > 0:
                 rate2 = derived_v / tb
                 if abs(rate2 - Decimal("0.20")) < Decimal("0.02") or abs(rate2 - Decimal("0.09")) < Decimal("0.02"):
-                    valid_v = True
+                    valid_pair_2 = True
 
-            if valid_v and not valid_tb:
+            # Check Pair 3: t and v confirm each other
+            valid_pair_3 = False
+            derived_tb = t - v
+            if derived_tb > 0 and v > 0:
+                rate3 = v / derived_tb
+                if abs(rate3 - Decimal("0.20")) < Decimal("0.02") or abs(rate3 - Decimal("0.09")) < Decimal("0.02"):
+                    valid_pair_3 = True
+
+            if valid_pair_1 and not valid_pair_2 and not valid_pair_3:
+                derived_t = (tb + v).quantize(Decimal("0.01"))
+                logger.warning("Cross-validation: replacing corrupted total %s with derived %s", t, derived_t)
+                summary.total_amount_due.amount = derived_t
+            elif valid_pair_2 and not valid_pair_3:
                 logger.warning("Cross-validation: replacing corrupted vat_amount %s with derived %s", v, derived_v)
-                summary.vat_amount.amount = derived_v
-            elif valid_tb and not valid_v:
+                summary.vat_amount.amount = derived_v.quantize(Decimal("0.01"))
+            elif valid_pair_3 and not valid_pair_2:
                 logger.warning("Cross-validation: replacing corrupted tax_base %s with derived %s", tb, derived_tb)
-                summary.tax_base.amount = derived_tb
+                summary.tax_base.amount = derived_tb.quantize(Decimal("0.01"))
             else:
-                if abs(tb - derived_tb) > t * Decimal("0.5"):
-                    logger.warning("Cross-validation: replacing corrupted tax_base %s with derived %s", tb, derived_tb)
-                    summary.tax_base.amount = derived_tb
-                elif abs(v - derived_v) > t * Decimal("0.5"):
-                    logger.warning("Cross-validation: replacing corrupted vat_amount %s with derived %s", v, derived_v)
-                    summary.vat_amount.amount = derived_v
+                # Fallback: if t is much larger than tb+v, replace t
+                if tb > 0 and v > 0 and (tb + v) * Decimal("2") < t:
+                    summary.total_amount_due.amount = (tb + v).quantize(Decimal("0.01"))
+                elif derived_tb > 0 and abs(tb - derived_tb) > t * Decimal("0.5"):
+                    summary.tax_base.amount = derived_tb.quantize(Decimal("0.01"))
+                elif derived_v > 0 and abs(v - derived_v) > t * Decimal("0.5"):
+                    summary.vat_amount.amount = derived_v.quantize(Decimal("0.01"))
     elif t is not None and v is not None and tb is None:
-        summary.tax_base.amount = t - v
+        summary.tax_base.amount = (t - v).quantize(Decimal("0.01"))
         logger.warning("Cross-validation: derived missing tax_base as %s", summary.tax_base.amount)
     elif t is not None and tb is not None and v is None:
-        summary.vat_amount.amount = t - tb
+        summary.vat_amount.amount = (t - tb).quantize(Decimal("0.01"))
         logger.warning("Cross-validation: derived missing vat_amount as %s", summary.vat_amount.amount)
     elif tb is not None and v is not None and t is None:
-        summary.total_amount_due.amount = tb + v
+        summary.total_amount_due.amount = (tb + v).quantize(Decimal("0.01"))
         logger.warning("Cross-validation: derived missing total as %s", summary.total_amount_due.amount)
+
+    # Check if numbers were extracted as integers missing a 2-decimal point (e.g. 2846 -> 28.46, 3415 -> 34.15)
+    if line_items:
+        items_sum = sum(
+            (it.total_price_net.amount for it in line_items if it.total_price_net and it.total_price_net.amount and it.total_price_net.amount < Decimal("10000")),
+            Decimal("0.00")
+        )
+        if summary.tax_base.amount is not None and summary.tax_base.amount > 100 and items_sum > 0:
+            scaled_tb = (summary.tax_base.amount / 100).quantize(Decimal("0.01"))
+            if abs(scaled_tb - items_sum) < Decimal("0.05") or any(abs(it.total_price_net.amount - scaled_tb) < Decimal("0.05") for it in line_items if it.total_price_net and it.total_price_net.amount):
+                logger.warning("Scaling tax_base from %s to %s to match line items sum %s", summary.tax_base.amount, scaled_tb, items_sum)
+                summary.tax_base.amount = scaled_tb
+                if summary.total_amount_due.amount is not None and summary.total_amount_due.amount > 100:
+                    summary.total_amount_due.amount = (summary.total_amount_due.amount / 100).quantize(Decimal("0.01"))
+                if summary.vat_amount.amount is not None and summary.vat_amount.amount > 100:
+                    summary.vat_amount.amount = (summary.vat_amount.amount / 100).quantize(Decimal("0.01"))
 
     return summary
 
@@ -3862,7 +4086,7 @@ def process_invoice(image_path: Path | str, debug_dir: Path | None = None) -> In
     invoice.line_items = extract_line_items(table_regions, lines)
 
     # Financial summary
-    invoice.financial_summary = extract_financial_summary(lines, tokens)
+    invoice.financial_summary = extract_financial_summary(lines, tokens, line_items=invoice.line_items)
 
     # Currency — detect but NEVER auto-convert
     detected_currency = extract_currency(lines, tokens, invoice.invoice_metadata.date_issued)
