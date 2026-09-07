@@ -326,6 +326,14 @@ class NapPackageExportRequest(BaseModel):
     as_zip: bool = False
 
 
+class MicroinvestExportRequest(BaseModel):
+    invoices: list[dict[str, Any]] = Field(..., description="List of invoice JSON payloads")
+    default_expense_account: str = Field(default="602", description="Default expense account for Delta Pro")
+    default_goods_account: str = Field(default="304", description="Default goods account for Delta Pro")
+    default_vat_account: str = Field(default="453/1", description="Default VAT account for Delta Pro")
+    default_supplier_account: str = Field(default="401", description="Default supplier account for Delta Pro")
+
+
 # ---------------------------------------------------------------------------
 # Background Task Queue & Persistent Job Manager (Pillar 4 & 5, M12/M14)
 # ---------------------------------------------------------------------------
@@ -1510,6 +1518,46 @@ async def export_nap_package_endpoint(request: NapPackageExportRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed generating complete NAP package: {exc}",
         )
+
+
+@app.post(
+    "/api/v1/export/microinvest/sklad",
+    summary="Export to Microinvest Sklad Pro (Warehouse Pro) XML",
+    tags=["Accounting", "Microinvest ERP"],
+)
+async def export_microinvest_sklad_endpoint(request: MicroinvestExportRequest):
+    """Export invoices to Microinvest Sklad Pro (Warehouse Pro) Purchase XML."""
+    from accounting_export import generate_microinvest_sklad_xml
+    if not request.invoices:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invoices list cannot be empty",
+        )
+    xml_content = generate_microinvest_sklad_xml(request.invoices[0])
+    return Response(content=xml_content, media_type="application/xml")
+
+
+@app.post(
+    "/api/v1/export/microinvest/delta",
+    summary="Export to Microinvest Delta Pro TransferData XML",
+    tags=["Accounting", "Microinvest ERP"],
+)
+async def export_microinvest_delta_endpoint(request: MicroinvestExportRequest):
+    """Export invoices to Microinvest Delta Pro <TransferData xmlns="urn:Transfer"> XML."""
+    from accounting_export import generate_microinvest_delta_xml
+    if not request.invoices:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invoices list cannot be empty",
+        )
+    xml_content = generate_microinvest_delta_xml(
+        request.invoices,
+        default_expense_account=request.default_expense_account,
+        default_goods_account=request.default_goods_account,
+        default_vat_account=request.default_vat_account,
+        default_supplier_account=request.default_supplier_account,
+    )
+    return Response(content=xml_content, media_type="application/xml")
 
 
 # ---------------------------------------------------------------------------

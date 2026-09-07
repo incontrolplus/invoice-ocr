@@ -1,7 +1,7 @@
 """Bulgarian Invoice OCR & Document Understanding Pipeline (Core Package)."""
 from __future__ import annotations
 
-from . import constants, currency, tesseract_env, models, normalizers, ingestion, preprocessing, ocr_passes, layout, classification, extraction, table_recovery, financials, validation, cache, pipeline, batch, cli, vendor_profiles
+from . import constants, currency, tesseract_env, models, normalizers, ingestion, preprocessing, ocr_passes, layout, classification, extraction, table_recovery, financials, validation, cache, pipeline, batch, cli, vendor_profiles, microinvest_export
 
 from .constants import (
     ALL_COLUMN_SYNONYMS_SORTED,
@@ -585,7 +585,7 @@ _SUBMODULES = [
     constants, currency, tesseract_env, models, normalizers, ingestion,
     preprocessing, ocr_passes, layout, classification, extraction,
     table_recovery, financials, validation, cache, pipeline, batch, cli,
-    vendor_profiles,
+    vendor_profiles, microinvest_export,
 ]
 for _mod in _SUBMODULES:
     for _name in dir(_mod):

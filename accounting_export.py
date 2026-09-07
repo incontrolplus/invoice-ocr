@@ -2425,3 +2425,13 @@ def export_nap_package(
             "deklar": deklar_content if isinstance(deklar_content, str) else deklar_content.decode("cp1251", errors="replace"),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Microinvest ERP Integration (Sklad Pro & Delta Pro TransferData XML)
+# ---------------------------------------------------------------------------
+from invoice_core.microinvest_export import (
+    generate_microinvest_sklad_xml,
+    generate_microinvest_delta_xml,
+    export_microinvest_package,
+)
