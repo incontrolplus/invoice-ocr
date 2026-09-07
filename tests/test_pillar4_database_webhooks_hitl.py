@@ -226,11 +226,12 @@ class TestPillar4DatabaseWebhooksHitl(unittest.TestCase):
         self.assertEqual(job1["progress"]["percent"], 60.0)
 
         # Simulate microservice restart by instantiating a fresh JobManager
+        # Startup reconciliation marks in-flight jobs as INTERRUPTED so they don't hang indefinitely
         jm2 = JobManager()
         job2 = jm2.get_job(job_id)
         self.assertIsNotNone(job2)
         self.assertEqual(job2["job_id"], job_id)
-        self.assertEqual(job2["status"], JobStatus.PROCESSING.value)
+        self.assertEqual(job2["status"], JobStatus.INTERRUPTED.value)
         self.assertEqual(job2["progress"]["percent"], 60.0)
         self.assertEqual(job2["metadata"]["test_key"], "val123")
 

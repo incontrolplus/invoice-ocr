@@ -263,15 +263,20 @@ def _extract_invoice_fields(invoice: Any) -> dict[str, Any]:
         sup_eik = supplier.get("eik") or supplier.get("vat_number") or "999999999"
         sup_vat = supplier.get("vat_number")
 
+        total_due_dict = financial.get("total_amount_due") or {}
+        tax_base_dict = financial.get("tax_base") or {}
+        vat_amount_dict = financial.get("vat_amount") or {}
+        total_bgn_dict = financial.get("total_amount_bgn") or {}
+
         currency = (
-            financial.get("total_amount_due", {}).get("currency")
-            or financial.get("tax_base", {}).get("currency")
+            total_due_dict.get("currency")
+            or tax_base_dict.get("currency")
             or "BGN"
         )
-        total_due = _to_decimal(financial.get("total_amount_due", {}).get("amount"))
-        tax_base = _to_decimal(financial.get("tax_base", {}).get("amount"))
-        vat_amount = _to_decimal(financial.get("vat_amount", {}).get("amount"))
-        total_bgn = _to_decimal(financial.get("total_amount_bgn", {}).get("amount"))
+        total_due = _to_decimal(total_due_dict.get("amount"))
+        tax_base = _to_decimal(tax_base_dict.get("amount"))
+        vat_amount = _to_decimal(vat_amount_dict.get("amount"))
+        total_bgn = _to_decimal(total_bgn_dict.get("amount"))
 
         items_desc = [it.get("description", "") or "" for it in line_items]
         vat_rates = [it.get("vat_rate_pct") for it in line_items if it.get("vat_rate_pct") is not None]

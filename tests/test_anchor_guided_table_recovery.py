@@ -157,6 +157,102 @@ class TestRecoverAnchorGuidedTable:
         assert recovered[1].description == "ПИЛЕШКИ СЪРЦА ОХЛАДЕНИ"
         assert recovered[1].total_price_net.amount == Decimal("272.89")
 
+    def test_filter_carry_over_items_explicit_keywords(self):
+        from invoice_ocr import filter_carry_over_items
+
+        items = [
+            LineItem(index=1, description="СИРЕНЕ КРАВЕ", total_price_net=MoneyAmount(Decimal("120.00"))),
+            LineItem(index=2, description="КАШКАВАЛ ВИТОША", total_price_net=MoneyAmount(Decimal("80.00"))),
+            LineItem(index=3, description="ПРЕНОС КЪМ СТР. 2", total_price_net=MoneyAmount(Decimal("200.00"))),
+            LineItem(index=4, description="ОТ ПРЕНОС", total_price_net=MoneyAmount(Decimal("200.00"))),
+            LineItem(index=5, description="МАСЛО КРАВЕ", total_price_net=MoneyAmount(Decimal("50.00"))),
+        ]
+
+        filtered = filter_carry_over_items(items)
+        assert len(filtered) == 3
+        assert [it.description for it in filtered] == ["СИРЕНЕ КРАВЕ", "КАШКАВАЛ ВИТОША", "МАСЛО КРАВЕ"]
+        total = sum(it.total_price_net.amount for it in filtered)
+        assert total == Decimal("250.00")
+
+    def test_filter_carry_over_items_implicit_running_subtotal(self):
+        from invoice_ocr import filter_carry_over_items
+
+        items = [
+            LineItem(index=1, description="МАСА ТРАПЕЗНА", total_price_net=MoneyAmount(Decimal("350.00"))),
+            LineItem(index=2, description="СТОЛ ТРАПЕЗЕН", total_price_net=MoneyAmount(Decimal("150.00"))),
+            LineItem(index=3, description="ЗА ПРЕНАСЯНЕ", total_price_net=MoneyAmount(Decimal("500.00"))),
+            LineItem(index=4, description="ШКАФ ЗА ОБУВКИ", total_price_net=MoneyAmount(Decimal("220.00"))),
+        ]
+
+        filtered = filter_carry_over_items(items)
+        assert len(filtered) == 3
+        assert [it.description for it in filtered] == ["МАСА ТРАПЕЗНА", "СТОЛ ТРАПЕЗЕН", "ШКАФ ЗА ОБУВКИ"]
+        total = sum(it.total_price_net.amount for it in filtered)
+        assert total == Decimal("720.00")
+
+    def test_multi_page_anchor_guided_recovery(self):
+        # Page 1 has 1 item already extracted: 200.00
+        p1_item = LineItem(
+            index=1,
+            description="АРТИКУЛ СТР 1",
+            total_price_net=MoneyAmount(Decimal("200.00")),
+            bbox=(100, 400, 600, 30),
+            page_number=1,
+        )
+
+        # Page 2 has lines and tokens for a missing row: 150.00
+        p2_tokens = [
+            OcrToken("АРТИКУЛ", 95, (400, 300, 120, 25), page_number=2),
+            OcrToken("СТР", 95, (540, 300, 60, 25), page_number=2),
+            OcrToken("2", 95, (620, 300, 30, 25), page_number=2),
+            OcrToken("1", 95, (1600, 300, 30, 25), page_number=2),
+            OcrToken("150.00", 95, (1850, 300, 80, 25), page_number=2),
+            OcrToken("150.00", 95, (2250, 300, 80, 25), page_number=2),
+        ]
+        p2_line = LogicalLine(
+            tokens=p2_tokens,
+            text="АРТИКУЛ СТР 2 1 150.00 150.00",
+            bbox=(400, 300, 1930, 25),
+            page_number=2,
+            y_center=312.0,
+        )
+
+        header_l2 = LogicalLine(
+            tokens=[OcrToken("Наименование", 95, (100, 150, 100, 20), page_number=2)],
+            text="Наименование Количество Ед. цена Стойност",
+            bbox=(100, 150, 600, 20),
+            page_number=2,
+            y_center=160.0,
+        )
+        totals_l2 = LogicalLine(
+            tokens=[OcrToken("Всичко", 95, (100, 800, 60, 20), page_number=2)],
+            text="Данъчна основа 350.00 Сума за плащане 420.00",
+            bbox=(100, 800, 600, 20),
+            page_number=2,
+            y_center=810.0,
+        )
+
+        fs = FinancialSummary(
+            tax_base=MoneyAmount(Decimal("350.00"), "BGN"),
+            total_amount_due=MoneyAmount(Decimal("420.00"), "BGN"),
+        )
+
+        all_lines = [header_l2, p2_line, totals_l2]
+        all_tokens = p2_tokens
+
+        recovered = recover_anchor_guided_table(
+            items=[p1_item],
+            lines=all_lines,
+            tokens=all_tokens,
+            financial_summary=fs,
+            page_number=None,  # Multi-page discovery
+        )
+
+        assert len(recovered) == 2
+        recovered_sum = sum(it.total_price_net.amount for it in recovered)
+        assert recovered_sum == Decimal("350.00")
+        assert any("СТР" in (it.description or "") for it in recovered)
+
 
 class TestArchiveAcceptanceP0:
     """Acceptance tests for real archive invoices 51.pdf, 48.pdf, 14.pdf."""

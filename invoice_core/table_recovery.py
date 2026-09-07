@@ -27,6 +27,7 @@ from .models import LineItem, LogicalLine, MoneyAmount, OcrToken, TableColumn, T
 from .normalizers import clean_ocr_artifacts, parse_money, sanitize_vat_rate
 from .ocr_passes import _parse_ocr_dict_to_tokens, execute_ocr_pass, run_multiple_ocr_passes
 from .preprocessing import generate_preprocessing_variants, to_grayscale
+from .vendor_profiles import is_dot_matrix_vendor
 
 logger = logging.getLogger("invoice_ocr")
 
@@ -251,7 +252,7 @@ def _parse_row_tokens_anchor_guided(
     )
 
 
-def recover_anchor_guided_table(
+def _recover_anchor_guided_page(
     items: list[LineItem],
     lines: list[LogicalLine],
     tokens: list[OcrToken] | None = None,
@@ -259,7 +260,7 @@ def recover_anchor_guided_table(
     image_path: Path | str | None = None,
     page_number: int = 1,
 ) -> list[LineItem]:
-    """Recover missing table rows using verified financial tax_base anchor and X-projection profiles.
+    """Recover missing table rows on a single page using verified financial tax_base anchor.
 
     Anchor-Guided Table Recovery (P0):
     When a document exhibits high OCR confidence and verified metadata (totals, dates, supplier)
@@ -506,6 +507,97 @@ def recover_anchor_guided_table(
     return items
 
 
+def recover_anchor_guided_table(
+    items: list[LineItem],
+    lines: list[LogicalLine],
+    tokens: list[OcrToken] | None = None,
+    financial_summary: FinancialSummary | None = None,
+    image_path: Path | str | None = None,
+    page_number: int | None = None,
+) -> list[LineItem]:
+    """Recover missing table rows across single or multiple pages using financial tax_base anchor."""
+    if not financial_summary or financial_summary.tax_base.amount is None:
+        return items
+
+    tb = financial_summary.tax_base.amount
+    if tb <= Decimal("0.00"):
+        return items
+
+    if page_number is not None:
+        return _recover_anchor_guided_page(
+            items=items,
+            lines=lines,
+            tokens=tokens,
+            financial_summary=financial_summary,
+            image_path=image_path,
+            page_number=page_number,
+        )
+
+    # Multi-page table recovery
+    current_sum = sum(
+        (it.total_price_net.amount for it in items if it.total_price_net and it.total_price_net.amount is not None),
+        Decimal("0.00")
+    )
+    if abs(current_sum - tb) <= Decimal("0.05"):
+        return items
+
+    pages = sorted(set(getattr(l, "page_number", 1) for l in lines)) or [1]
+    res_items = items
+    for p in pages:
+        cur_sum = sum(
+            (it.total_price_net.amount for it in res_items if it.total_price_net and it.total_price_net.amount is not None),
+            Decimal("0.00")
+        )
+        if abs(cur_sum - tb) <= Decimal("0.05"):
+            break
+        res_items = _recover_anchor_guided_page(
+            items=res_items,
+            lines=lines,
+            tokens=tokens,
+            financial_summary=financial_summary,
+            image_path=image_path,
+            page_number=p,
+        )
+
+    return res_items
+
+
+def filter_carry_over_items(
+    items: list[LineItem],
+    financial_summary: FinancialSummary | None = None,
+) -> list[LineItem]:
+    """Filter out multi-page intermediate carry-over / subtotal lines ('Пренос', 'За пренасяне')."""
+    if not items:
+        return items
+
+    filtered: list[LineItem] = []
+    carry_over_keywords = {
+        "пренос", "за пренасяне", "от пренос", "към пренос", "пренесено",
+        "пренесена сума", "сума за пренасяне", "пренесен остатък",
+        "междинна сума", "междинен сбор", "стр. общо", "посл. стр."
+    }
+
+    running_sum = Decimal("0.00")
+    for it in items:
+        desc_low = (it.description or "").lower()
+        if any(kw in desc_low for kw in carry_over_keywords):
+            continue
+
+        amt = it.total_price_net.amount if it.total_price_net else None
+        if amt is not None and running_sum > Decimal("0.00"):
+            # Check if this item matches prior running sum (subtotal carry-over)
+            if abs(amt - running_sum) <= Decimal("0.02"):
+                if it.quantity is None or it.quantity == Decimal("1.000") or it.quantity == Decimal("1"):
+                    if not it.article_code and (not it.description or len(it.description.split()) <= 3):
+                        continue
+
+        if amt is not None:
+            running_sum += amt
+        filtered.append(it)
+
+    return filtered
+
+
 def extract_fiscal_fuel_receipt_items(
     lines: list[LogicalLine],
     financial_summary: FinancialSummary | None,
@@ -619,9 +711,9 @@ def extract_line_items(
             if recovered:
                 return recovered
 
-            # Fallback for known degraded dot-matrix invoices (e.g. Detelina)
-            all_text = " ".join(l.text for l in lines).upper()
-            if "114609507" in all_text or "114609407" in all_text or "ДЕТЕЛИНА" in all_text:
+            # Fallback for known degraded dot-matrix invoices (from vendor profiles)
+            all_text = " ".join(l.text for l in lines)
+            if is_dot_matrix_vendor(all_text):
                 tb = financial_summary.tax_base.amount
                 curr = financial_summary.tax_base.currency or "EUR"
                 return [
@@ -1017,6 +1109,9 @@ def extract_line_items(
 
         if not is_duplicate:
             deduped_items.append(item)
+
+    # Filter multi-page intermediate carry-overs / subtotals
+    deduped_items = filter_carry_over_items(deduped_items, financial_summary)
 
     # Single missing item reconciliation against financial summary
     if financial_summary and financial_summary.tax_base.amount is not None:

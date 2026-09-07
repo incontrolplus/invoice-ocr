@@ -454,34 +454,216 @@ def generate_preprocessing_variants(raw_img: np.ndarray) -> list[tuple[str, np.n
 
 
 
+def order_quadrilateral_points(pts: np.ndarray) -> np.ndarray:
+    """Order quadrilateral points: top-left, top-right, bottom-right, bottom-left."""
+    rect = np.zeros((4, 2), dtype="float32")
+    pts_arr = pts.reshape(4, 2).astype("float32")
+    s = pts_arr.sum(axis=1)
+    rect[0] = pts_arr[np.argmin(s)]
+    rect[2] = pts_arr[np.argmax(s)]
+
+    diff = np.diff(pts_arr, axis=1)
+    rect[1] = pts_arr[np.argmin(diff)]
+    rect[3] = pts_arr[np.argmax(diff)]
+
+    return rect
+
+
+def _is_valid_quadrilateral(pts: np.ndarray) -> bool:
+    """Check that 4 points form a plausible rectangular document (angles between ~45 and ~135 degrees)."""
+    for i in range(4):
+        p_prev = pts[(i - 1) % 4]
+        p_curr = pts[i]
+        p_next = pts[(i + 1) % 4]
+        v1 = p_prev - p_curr
+        v2 = p_next - p_curr
+        norm1 = float(np.linalg.norm(v1))
+        norm2 = float(np.linalg.norm(v2))
+        if norm1 < 1e-3 or norm2 < 1e-3:
+            return False
+        cos_theta = float(np.dot(v1, v2)) / (norm1 * norm2)
+        if abs(cos_theta) > 0.70:
+            return False
+    return True
+
+
+def _is_image_border(pts: np.ndarray, w: int, h: int, margin: float = 0.02) -> bool:
+    """Check if quadrilateral points simply represent the outer image boundary."""
+    margin_x = w * margin
+    margin_y = h * margin
+    on_border = 0
+    for pt in pts:
+        x, y = pt[0], pt[1]
+        if (x <= margin_x or x >= w - margin_x) and (y <= margin_y or y >= h - margin_y):
+            on_border += 1
+    return on_border >= 3
+
+
+def detect_document_quadrilateral(
+    img: np.ndarray,
+    min_area_ratio: float = 0.15,
+    max_area_ratio: float = 0.98,
+) -> np.ndarray | None:
+    """Detect the 4 corners of a physical document page in an image (e.g. mobile photo).
+
+    Returns ordered 4x2 float32 array [[tl_x, tl_y], [tr_x, tr_y], [br_x, br_y], [bl_x, bl_y]]
+    or None if no prominent quadrilateral is found.
+    """
+    h, w = img.shape[:2]
+    proc_dim = 1000
+    scale = 1.0
+    if max(h, w) > proc_dim:
+        scale = float(proc_dim) / float(max(h, w))
+        small = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    else:
+        small = img
+
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY) if len(small.shape) == 3 else small
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Multi-strategy contour search: Canny edges followed by Otsu threshold
+    edges = cv2.Canny(blurred, 50, 150)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    edges = cv2.dilate(edges, kernel, iterations=1)
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        thresh_edges = cv2.Canny(thresh, 50, 150)
+        contours, _ = cv2.findContours(thresh_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    candidates: list[tuple[float, np.ndarray]] = []
+    scaled_total = float(small.shape[0] * small.shape[1])
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        area_ratio = area / scaled_total
+        if area_ratio < min_area_ratio or area_ratio > max_area_ratio:
+            continue
+
+        peri = cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            candidates.append((area, approx))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    best_poly = candidates[0][1]
+
+    poly_orig = (best_poly.reshape(4, 2).astype("float32")) / scale
+    ordered = order_quadrilateral_points(poly_orig)
+
+    if not _is_valid_quadrilateral(ordered):
+        return None
+    if _is_image_border(ordered, w, h):
+        return None
+
+    return ordered
+
+
+def four_point_perspective_transform(
+    img: np.ndarray,
+    pts: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Perform 4-point perspective warp on img given 4 quadrilateral corners.
+
+    Returns (warped_img, M, M_inv).
+    """
+    rect = order_quadrilateral_points(pts)
+    tl, tr, br, bl = rect
+
+    width_a = np.linalg.norm(br - bl)
+    width_b = np.linalg.norm(tr - tl)
+    max_width = max(int(width_a), int(width_b))
+
+    height_a = np.linalg.norm(tr - br)
+    height_b = np.linalg.norm(tl - bl)
+    max_height = max(int(height_a), int(height_b))
+
+    dst = np.array([
+        [0, 0],
+        [max_width - 1, 0],
+        [max_width - 1, max_height - 1],
+        [0, max_height - 1]
+    ], dtype="float32")
+
+    M = cv2.getPerspectiveTransform(rect, dst)
+    M_inv = cv2.getPerspectiveTransform(dst, rect)
+
+    warped = cv2.warpPerspective(img, M, (max_width, max_height), flags=cv2.INTER_LANCZOS4)
+    return warped, M, M_inv
+
+
+def transform_bbox_perspective(
+    bbox: tuple[int, int, int, int],
+    M_inv: np.ndarray,
+) -> tuple[int, int, int, int]:
+    """Transform bounding box (x, y, w, h) from warped image coordinates
+    back to original image coordinates using inverse homography matrix M_inv.
+    """
+    x, y, w, h = bbox
+    corners = np.array([
+        [x, y],
+        [x + w, y],
+        [x + w, y + h],
+        [x, y + h]
+    ], dtype="float32").reshape(-1, 1, 2)
+
+    orig_pts = cv2.perspectiveTransform(corners, M_inv).reshape(-1, 2)
+    min_x = int(np.floor(np.min(orig_pts[:, 0])))
+    min_y = int(np.floor(np.min(orig_pts[:, 1])))
+    max_x = int(np.ceil(np.max(orig_pts[:, 0])))
+    max_y = int(np.ceil(np.max(orig_pts[:, 1])))
+    return (max(0, min_x), max(0, min_y), max(1, max_x - min_x), max(1, max_y - min_y))
+
+
 def preprocess_mobile_photo(
     img: np.ndarray,
     target_dim: int = 2400,
+    apply_perspective: bool = True,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Comprehensive preprocessing pipeline for real-world mobile camera photos.
     
-    Transforms degraded mobile photos (low resolution, shadows, dot-matrix gaps)
-    into high-contrast, binarized text ready for Tesseract OCR.
+    Transforms degraded mobile photos (perspective skew, low resolution, shadows,
+    dot-matrix gaps) into high-contrast, rectified, binarized text ready for OCR.
     """
     orig_h, orig_w = img.shape[:2]
     meta: dict[str, Any] = {
         "original_shape": (orig_w, orig_h),
+        "perspective_warped": False,
         "upscaled": False,
         "shadow_removed": True,
         "dot_matrix_bridged": True,
     }
 
+    work_img = img
+
+    # Stage 0: 4-Point Document Quadrilateral Perspective Rectification
+    if apply_perspective:
+        corners = detect_document_quadrilateral(work_img)
+        if corners is not None:
+            warped, M, M_inv = four_point_perspective_transform(work_img, corners)
+            work_img = warped
+            meta["perspective_warped"] = True
+            meta["homography_matrix"] = M.tolist()
+            meta["inverse_homography_matrix"] = M_inv.tolist()
+            meta["detected_corners"] = corners.tolist()
+            meta["warped_shape"] = (warped.shape[1], warped.shape[0])
+
     # Stage 1: Smart High-Fidelity Upscaling
-    if max(orig_h, orig_w) < 2200:
-        scale = float(target_dim) / float(max(orig_h, orig_w))
-        new_w = int(orig_w * scale)
-        new_h = int(orig_h * scale)
-        work_img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+    cur_h, cur_w = work_img.shape[:2]
+    if max(cur_h, cur_w) < 2200:
+        scale = float(target_dim) / float(max(cur_h, cur_w))
+        new_w = int(cur_w * scale)
+        new_h = int(cur_h * scale)
+        work_img = cv2.resize(work_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
         meta["upscaled"] = True
         meta["scale_factor"] = scale
         meta["new_shape"] = (new_w, new_h)
-    else:
-        work_img = img
 
     # Stage 2: Illumination Normalization & Shadow Attenuation
     gray = cv2.cvtColor(work_img, cv2.COLOR_BGR2GRAY) if len(work_img.shape) == 3 else work_img

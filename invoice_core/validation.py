@@ -21,6 +21,7 @@ from .currency import convert_eur_to_bgn, verify_dual_currency_parity
 from .financials import _detect_all_currencies
 from .models import DocumentType, Invoice, MoneyAmount, OcrToken, ValidationIssue, ValidationResult
 from .normalizers import is_valid_eik9, is_valid_eik13, sanitize_vat_rate, validate_eik, validate_iban_modulo97
+from .vendor_profiles import get_recapitulation_eiks
 
 logger = logging.getLogger("invoice_ocr")
 
@@ -336,11 +337,12 @@ def _validate_totals(invoice: Invoice) -> list[ValidationIssue]:
         or (item.description and any(kw in item.description.lower() for kw in ("отстъпка", "отст.", "discount", "рабат")))
         for item in invoice.line_items
     )
-    is_metro = (
-        (invoice.supplier and invoice.supplier.eik in ("121644736", "121644734"))
+    recap_eiks = get_recapitulation_eiks()
+    is_recap_vendor = (
+        (invoice.supplier and invoice.supplier.eik in recap_eiks)
         or ("МЕТРО" in ((invoice.supplier.name if invoice.supplier else "") or "").upper())
     )
-    if len(invoice.line_items) > 15 and (has_discounts or is_eur or is_metro):
+    if len(invoice.line_items) > 15 and (has_discounts or is_eur or is_recap_vendor):
         cur_vat_tol = ZDDS_DISCOUNT_TOLERANCE
         cur_tot_tol = ZDDS_DISCOUNT_TOLERANCE
     else:
@@ -387,7 +389,7 @@ def _validate_totals(invoice: Invoice) -> list[ValidationIssue]:
             elif (
                 not all_items_have_total
                 or (getattr(invoice.invoice_metadata, "ocr_confidence_score", 1.0) or 1.0) < 0.70
-                or (invoice.supplier.eik in ("121644736", "121644734"))
+                or (invoice.supplier and invoice.supplier.eik in recap_eiks)
                 or ("МЕТРО" in (invoice.supplier.name or "").upper())
             ):
                 issues.append(ValidationIssue(

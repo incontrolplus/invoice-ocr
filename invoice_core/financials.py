@@ -27,7 +27,7 @@ from .normalizers import (
     parse_money,
     validate_iban_modulo97,
 )
-from .vendor_profiles import get_known_supplier_profiles
+from .vendor_profiles import get_known_supplier_profiles, is_dot_matrix_vendor
 
 logger = logging.getLogger("invoice_ocr")
 
@@ -261,7 +261,7 @@ def extract_financial_summary(
 
     # Specialized totals for Detelina-DP dot-matrix invoices
     is_detelina_fin = (
-        "114609507" in all_lines_upper or "114609407" in all_lines_upper or "ДЕТЕЛИНА" in all_lines_upper
+        is_dot_matrix_vendor(all_lines_text)
         or "ГЕОРГИ КОЧЕВ" in all_lines_upper or "ГЕОРГИ КОЧЕ" in all_lines_upper
         or ("ДЕТЕЛ" in all_lines_upper and "ПЛЕВЕН" in all_lines_upper)
         or any("100099" in (t.text or "") for t in tokens)

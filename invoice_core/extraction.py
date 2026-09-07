@@ -29,6 +29,15 @@ from .normalizers import (
     validate_eik,
 )
 
+from .vendor_profiles import (
+    get_fused_eik_prefixes,
+    get_protected_supplier_eiks,
+    get_recapitulation_eiks,
+    get_vendor_profile,
+    get_vendor_profiles,
+    is_dot_matrix_vendor,
+)
+
 logger = logging.getLogger("invoice_ocr")
 
 def extract_invoice_number(
@@ -875,7 +884,7 @@ def _find_party_region(
 
 def _is_metro_document(tokens: list[OcrToken], lines: list[LogicalLine] | None = None) -> bool:
     """Check if the document is an invoice issued by Metro Cash & Carry Bulgaria."""
-    METRO_EIK_PREFIXES = {"121644736", "121644734"}
+    recap_prefixes = get_recapitulation_eiks()
 
     # Disqualify if known other suppliers appear in tokens or lines
     all_text = " ".join(t.text for t in tokens)
@@ -883,15 +892,19 @@ def _is_metro_document(tokens: list[OcrToken], lines: list[LogicalLine] | None =
         all_text += " " + " ".join(l.text for l in lines)
     all_upper = all_text.upper()
 
-    other_suppliers = ["114609507", "ДЕТЕЛИНА", "130864186", "ТОПЛИВО", "КАПИНА", "ИНТЕРМЕС", "ТЕМЕНУЖКА"]
+    other_suppliers = [
+        p.eik for p in get_vendor_profiles().values() if p.id != "metro"
+    ] + [
+        k.upper() for p in get_vendor_profiles().values() if p.id != "metro" for k in p.keywords
+    ] + ["ТОПЛИВО", "КАПИНА", "ИНТЕРМЕС", "ТЕМЕНУЖКА"]
     if any(s in all_upper for s in other_suppliers):
         return False
 
-    if any(t.text in METRO_EIK_PREFIXES or t.text.startswith("121644736") or t.text == "BG121644736" for t in tokens):
+    if any(t.text in recap_prefixes or any(t.text.startswith(p) for p in recap_prefixes) or t.text in {f"BG{p}" for p in recap_prefixes} for t in tokens):
         return True
     if lines:
         for l in lines:
-            if any(p in l.text for p in METRO_EIK_PREFIXES):
+            if any(p in l.text for p in recap_prefixes):
                 return True
 
     # Metro keywords requiring stronger signal than isolated typos of 'hetpo'
@@ -919,6 +932,7 @@ def _extract_metro_recipient(tokens: list[OcrToken], lines: list[LogicalLine] | 
         return None
 
     party = Party()
+    recap_prefixes = get_recapitulation_eiks()
 
     # Search for customer box across all pages, looking from last page backwards
     pages_with_tokens = sorted(set(getattr(l, "page_number", 1) for l in doc_lines), reverse=True)
@@ -962,17 +976,18 @@ def _extract_metro_recipient(tokens: list[OcrToken], lines: list[LogicalLine] | 
 
         box_text = "\n".join(l.text for l in box_lines)
 
+        recap_prefixes = get_recapitulation_eiks()
         # 1. Recipient EIK
         m_eik = re.search(r'(?i)(?:и[даин]\s*(?:номер|no|№)?|еик|булстат|идент\.?\s*№?)\s*[:./\-#]*\s*(\d{9,13})', box_text)
         if m_eik:
             cand = normalize_eik(m_eik.group(1))
-            if cand and cand not in ("121644736", "121644734") and validate_eik(cand):
+            if cand and cand not in recap_prefixes and validate_eik(cand):
                 party.eik = cand
 
         if not party.eik:
             for m in re.finditer(r'\b(\d{9})\b', box_text):
                 cand = normalize_eik(m.group(1))
-                if cand and cand not in ("121644736", "121644734") and validate_eik(cand):
+                if cand and cand not in recap_prefixes and validate_eik(cand):
                     party.eik = cand
                     break
 
@@ -986,7 +1001,7 @@ def _extract_metro_recipient(tokens: list[OcrToken], lines: list[LogicalLine] | 
         m_vat = re.search(r'(?i)(?:ин\s*по\s*(?:зддс|ддс)|ддс\s*(?:номер|№)|vat)\s*[:./\-#]*(?:bg)?\s*(\d{9,13})', box_text)
         if m_vat:
             cand_vat = normalize_vat_number(m_vat.group(0))
-            if cand_vat and cand_vat not in ("BG121644736", "BG121644734"):
+            if cand_vat and not any(cand_vat == f"BG{rp}" for rp in recap_prefixes):
                 party.vat_number = cand_vat
         if not party.vat_number and party.eik:
             party.vat_number = f"BG{party.eik}"
@@ -1031,7 +1046,7 @@ def _extract_metro_recipient(tokens: list[OcrToken], lines: list[LogicalLine] | 
             break
 
     # Party Separation Invariant: Recipient cannot be Metro
-    if party.eik in ("121644736", "121644734"):
+    if party.eik in recap_prefixes:
         party.eik = None
         party.vat_number = None
     if party.name and ("МЕТРО" in party.name.upper() or "7-11KM" in party.name.upper()):
@@ -1057,10 +1072,11 @@ def extract_party(
     """
     if _is_metro_document(tokens, lines):
         if role == "supplier":
+            vp_metro = get_vendor_profile("metro") or {}
             metro_supp = Party(
-                name="МЕТРО КЕШ ЕНД КЕРИ БЪЛГАРИЯ ЕООД",
-                eik="121644736",
-                vat_number="BG121644736",
+                name=vp_metro.get("name", "МЕТРО КЕШ ЕНД КЕРИ БЪЛГАРИЯ ЕООД"),
+                eik=vp_metro.get("eik", "121644736"),
+                vat_number=vp_metro.get("vat_number", "BG121644736"),
             )
             for line in lines:
                 if re.search(r'(?i)\b(?:ул\.\s*метро\s*\d+|цариградско\s*шосе)\b', line.text):
@@ -1069,7 +1085,7 @@ def extract_party(
                         metro_supp.address = clean_addr
                         break
             if not metro_supp.address:
-                metro_supp.address = "бул. Цариградско шосе 7-11 км, 1784 София"
+                metro_supp.address = vp_metro.get("address", "бул. Цариградско шосе 7-11 км, 1784 София")
             return metro_supp
         elif role == "recipient":
             metro_recipient = _extract_metro_recipient(tokens, lines)
@@ -1083,18 +1099,19 @@ def extract_party(
 
     # Detelina-DP specialized party extraction
     is_detelina_party = (
-        "114609507" in all_upper or "114609407" in all_upper or "ДЕТЕЛИНА" in all_upper
+        is_dot_matrix_vendor(all_text)
         or "ГЕОРГИ КОЧЕВ" in all_upper or "ГЕОРГИ КОЧЕ" in all_upper
         or ("ДЕТЕЛ" in all_upper and "ПЛЕВЕН" in all_upper)
         or any("100099" in (t.text or "") for t in tokens)
     )
     if is_detelina_party:
         if role == "supplier":
+            vp_detelina = get_vendor_profile("detelina") or {}
             return Party(
-                name="ООД ДЕТЕЛИНА - ДП",
-                eik="114609507",
-                vat_number="BG114609507",
-                address="гр. Плевен ул. Георги Кочев No 101",
+                name=vp_detelina.get("name", "ООД ДЕТЕЛИНА - ДП"),
+                eik=vp_detelina.get("eik", "114609507"),
+                vat_number=vp_detelina.get("vat_number", "BG114609507"),
+                address=vp_detelina.get("address", "гр. Плевен ул. Георги Кочев No 101"),
                 mol="ДЕТЕЛИН ПЕТРОВ",
             )
         elif role == "recipient":
@@ -1107,13 +1124,15 @@ def extract_party(
             )
 
     # Toplivo Gas specialized party extraction
-    if "130864186" in all_upper or "ТОПЛИВО" in all_upper or "ТОПАИВО" in all_upper:
+    vp_toplivo = get_vendor_profile("toplivo") or {}
+    if vp_toplivo.get("eik", "130864186") in all_upper or "ТОПЛИВО" in all_upper or "ТОПАИВО" in all_upper:
         if role == "supplier":
             return Party(
-                name="ТОПЛИВО ГАЗ ЕООД",
-                eik="130864186",
-                vat_number="BG130864186",
-                address="София, р-н Средец, ул. Солунска 2",
+                name=vp_toplivo.get("name", "ТОПЛИВО ГАЗ ЕООД"),
+                eik=vp_toplivo.get("eik", "130864186"),
+                vat_number=vp_toplivo.get("vat_number", "BG130864186"),
+                address=vp_toplivo.get("address", "София, р-н Средец, ул. Солунска 2"),
+                mol="Георги Спасов",
             )
         elif role == "recipient":
             return Party(
@@ -1350,13 +1369,15 @@ def extract_party(
                 party.name = cleaned
                 break
 
-    if party.name == "МЕТРО КЕШ ЕНД КЕРИ БЪЛГАРИЯ ЕООД":
-        party.eik = "121644736"
-        party.vat_number = "BG121644736"
+    metro_prof = get_vendor_profiles().get("metro")
+    if metro_prof and party.name == metro_prof.name:
+        party.eik = metro_prof.eik
+        party.vat_number = metro_prof.vat_number
 
     # Enforce Party Separation Invariant on recipient for Metro invoices
     if role == "recipient" and _is_metro_document(tokens, lines):
-        if party.eik in ("121644736", "121644734") or party.eik == "1216447365800":
+        recap_prefixes = set(get_recapitulation_eiks())
+        if party.eik in recap_prefixes or any(party.eik.startswith(p) for p in recap_prefixes if party.eik):
             party.eik = None
             party.vat_number = None
         if party.name and ("МЕТРО" in party.name.upper() or "7-11KM" in party.name.upper()):
@@ -1401,7 +1422,8 @@ def _extract_party_fallback(tokens: list[OcrToken], role: str) -> Party:
 
     # Enforce Party Separation Invariant on recipient for Metro invoices
     if role == "recipient" and _is_metro_document(tokens):
-        if party.eik in ("121644736", "121644734") or party.eik == "1216447365800":
+        recap_prefixes = set(get_recapitulation_eiks())
+        if party.eik in recap_prefixes or any(party.eik.startswith(p) for p in recap_prefixes if party.eik):
             party.eik = None
             party.vat_number = None
         if party.name and ("МЕТРО" in party.name.upper() or "7-11KM" in party.name.upper()):

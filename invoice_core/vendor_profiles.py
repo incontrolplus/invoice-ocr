@@ -223,4 +223,59 @@ def list_known_profiles() -> list[dict[str, Any]]:
     ]
 
 
+def get_fused_eik_prefixes() -> set[str]:
+    """Return all prefixes of fused EIKs from loaded profiles."""
+    prefixes: set[str] = set()
+    for p in get_vendor_profiles().values():
+        for prefix in p.fused_eik_prefixes:
+            prefixes.add(prefix)
+    return prefixes or {"121644736", "121644734"}
+
+
+def get_dot_matrix_eiks() -> set[str]:
+    """Return all EIKs matching dot-matrix profile."""
+    eiks: set[str] = set()
+    for p in get_vendor_profiles().values():
+        if p.ocr and p.ocr.get("dot_matrix"):
+            eiks.add(p.eik)
+            for alt in p.alternate_eiks:
+                eiks.add(alt)
+    return eiks or {"114609507", "114609407"}
+
+
+def is_dot_matrix_vendor(text: str) -> bool:
+    """Check if the provided text matches any dot-matrix supplier profile."""
+    if not text:
+        return False
+    txt_low = text.lower()
+    for p in get_vendor_profiles().values():
+        if p.ocr and p.ocr.get("dot_matrix"):
+            if p.eik in text or any(alt in text for alt in p.alternate_eiks):
+                return True
+            if any(k in txt_low for k in p.keywords):
+                return True
+    return False
+
+
+def get_recapitulation_eiks() -> set[str]:
+    """Return all supplier EIKs that use recapitulation tables / customer boxes."""
+    eiks: set[str] = set()
+    for p in get_vendor_profiles().values():
+        if p.layout and (p.layout.get("recapitulation_table") or p.layout.get("customer_box")):
+            eiks.add(p.eik)
+            for alt in p.alternate_eiks:
+                eiks.add(alt)
+    return eiks or {"121644736", "121644734"}
+
+
+def get_protected_supplier_eiks() -> set[str]:
+    """Return all supplier EIKs that should never be accidentally inferred as recipient."""
+    eiks: set[str] = set()
+    for p in get_vendor_profiles().values():
+        eiks.add(p.eik)
+        for alt in p.alternate_eiks:
+            eiks.add(alt)
+    return eiks
+
+
 KNOWN_SUPPLIER_PROFILES = get_known_supplier_profiles()

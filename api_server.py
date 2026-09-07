@@ -260,6 +260,7 @@ class JobStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
 
 
 class JobProgress(BaseModel):
@@ -364,8 +365,18 @@ class JobManager:
             with get_db_session() as db:
                 records = db.query(PersistentJobRecord).order_by(PersistentJobRecord.created_at.desc()).limit(self._max_history).all()
                 with self._lock:
+                    reconciled = 0
                     for r in records:
+                        # Reconcile orphaned jobs left in queued/processing state across restarts
+                        if r.status in (JobStatus.PROCESSING.value, JobStatus.QUEUED.value):
+                            r.status = JobStatus.INTERRUPTED.value
+                            r.completed_at = time.time()
+                            r.error_message = "Job was interrupted by server restart/shutdown"
+                            reconciled += 1
                         self._jobs[r.job_id] = r.to_dict()
+                    if reconciled > 0:
+                        db.commit()
+                        logger.info("Reconciled %d orphaned background jobs on startup", reconciled)
         except Exception as exc:
             logger.warning("Could not load jobs from database on startup: %s", exc)
 
@@ -512,6 +523,28 @@ class JobManager:
         except Exception:
             pass
         return deleted
+
+    def retry_job(self, job_id: str) -> Optional[dict[str, Any]]:
+        """Reset an interrupted, failed, or cancelled job back to QUEUED for execution."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+            if job["status"] not in (JobStatus.INTERRUPTED.value, JobStatus.FAILED.value, JobStatus.CANCELLED.value):
+                raise ValueError(f"Cannot retry job in '{job['status']}' state")
+            job["status"] = JobStatus.QUEUED.value
+            job["error"] = None
+            job["started_at"] = None
+            job["completed_at"] = None
+            job["progress"] = {
+                "total_documents": 0,
+                "processed_documents": 0,
+                "percent": 0.0,
+                "current_file": None,
+            }
+            job_dict = dict(job)
+        self._persist_job(job_dict)
+        return job_dict
 
 
 job_manager = JobManager()
@@ -1134,6 +1167,49 @@ async def delete_job_endpoint(job_id: str):
 
 
 @app.post(
+    "/v1/jobs/{job_id}/retry",
+    response_model=JobCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["Jobs"],
+    summary="Retry Interrupted or Failed Job",
+)
+@app.post(
+    "/api/v1/jobs/{job_id}/retry",
+    response_model=JobCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["Jobs"],
+    summary="Retry Interrupted or Failed Job",
+)
+async def retry_job_endpoint(job_id: str, background_tasks: BackgroundTasks):
+    """Retry an interrupted or failed background job."""
+    job = job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job '{job_id}' not found",
+        )
+    try:
+        retried_job = job_manager.retry_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
+    meta = retried_job.get("metadata", {})
+    req_data = meta.get("request_data") or {"input_dir": meta.get("input_dir")}
+    if retried_job.get("request_type") == "batch-dir" and req_data.get("input_dir"):
+        background_tasks.add_task(_run_batch_dir_job, job_id, req_data)
+
+    return {
+        "job_id": job_id,
+        "status": JobStatus.QUEUED.value,
+        "message": f"Job {job_id} successfully re-queued for execution",
+        "check_status_url": f"/v1/jobs/{job_id}",
+    }
+
+
+@app.post(
     "/v1/jobs/batch-dir",
     response_model=JobCreateResponse,
     status_code=status.HTTP_202_ACCEPTED,
@@ -1155,7 +1231,10 @@ async def queue_batch_dir_job(request: BatchDirRequest, background_tasks: Backgr
     if not in_path.is_dir():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Input path is not a directory: {request.input_dir}")
 
-    job_id = job_manager.create_job(request_type="batch-dir", metadata={"input_dir": str(in_path)})
+    job_id = job_manager.create_job(
+        request_type="batch-dir",
+        metadata={"input_dir": str(in_path), "request_data": request.model_dump()},
+    )
     background_tasks.add_task(_run_batch_dir_job, job_id, request.model_dump())
     return {
         "job_id": job_id,

@@ -243,10 +243,22 @@ def is_valid_eik13(raw: str | None) -> bool:
     return d[12] == c2
 
 
-def validate_eik(raw: str | None) -> bool:
-    """Validate a Bulgarian EIK using Mod-11 checksum.
+def _is_fused_eik_prefix(digits: str) -> str | None:
+    try:
+        from .vendor_profiles import get_fused_eik_prefixes
+        prefixes = get_fused_eik_prefixes()
+    except Exception:
+        prefixes = {"121644736", "121644734"}
+    for p in prefixes:
+        if digits.startswith(p):
+            return p
+    return None
 
-    Supports 9-digit UIC/BULSTAT (legal entities), 10-digit (EGN / natural persons),
+
+def validate_eik(raw: str | None) -> bool:
+    """Validate Bulgarian UIC/EIK checksum using official Modulo-11 algorithm.
+
+    Validates both 9-digit (standard legal entities and sole traders)
     and 13-digit (branches of legal entities).
     """
     if not raw:
@@ -257,8 +269,8 @@ def validate_eik(raw: str | None) -> bool:
     elif len(digits) == 10:
         return True
     elif len(digits) == 13:
-        # Fused Metro branch / postal codes (e.g. 1216447365800) are not valid 13-digit branch UICs
-        if digits.startswith("121644736") or digits.startswith("121644734"):
+        # Fused vendor branch / postal codes are not valid 13-digit branch UICs
+        if _is_fused_eik_prefix(digits):
             return False
         return is_valid_eik13(digits) or raw == "1234567890123"
     return False
@@ -318,11 +330,10 @@ def normalize_eik(raw: str) -> str | None:
             return digits
         return None
     elif len(digits) == 13:
-        # Metro branch postal code fusion (e.g. 1216447365800 Pleven, 1216447361784 Sofia, 1216447364000 Plovdiv)
-        # Metro stores in Bulgaria are not separate 13-digit legal branches.
-        # Metro Cash & Carry Bulgaria EOOD has statutory 9-digit UIC 121644736.
-        if digits.startswith("121644736") or digits.startswith("121644734"):
-            return "121644736"
+        # Vendor branch postal code fusion (e.g. 1216447365800 Pleven, 1216447361784 Sofia, 1216447364000 Plovdiv)
+        fused = _is_fused_eik_prefix(digits)
+        if fused:
+            return fused[:9]
         # Check if 13-digit string is an invalid 13-digit candidate with attached 4-digit postal/branch code
         if is_valid_eik9(digits[:9]) and not is_valid_eik13(digits):
             return digits[:9]
@@ -332,8 +343,11 @@ def normalize_eik(raw: str) -> str | None:
     elif len(digits) > 13:
         for i in range(len(digits) - 8):
             sub = digits[i:i + 9]
-            if sub in ("121644736", "121644734") or is_valid_eik9(sub):
-                return "121644736" if sub in ("121644736", "121644734") else sub
+            fused = _is_fused_eik_prefix(sub)
+            if fused:
+                return fused[:9]
+            if is_valid_eik9(sub):
+                return sub
     return None
 
 

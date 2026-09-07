@@ -75,6 +75,7 @@ from contractor_verification import (
     ContractorCache,
     ContractorVerificationResult,
     ContractorVerifier,
+    LocalVatRegistry,
     VatRegistrationStatus,
     verify_contractor,
     verify_contractor_async,
@@ -323,6 +324,54 @@ class TestContractorVerification:
         res = await verify_contractor_async("121644736", country_code="BG", date_tax_event="2026-08-16")
         assert res.legal_status == CompanyStatus.ACTIVE
         assert res.vat_registered_on_date is True
+
+    def test_local_vat_registry_seeding_and_upsert(self):
+        """Verify LocalVatRegistry initializes with seed entities and supports upsert."""
+        with tempfile.NamedTemporaryFile(suffix=".db") as tmp:
+            reg = LocalVatRegistry(db_path=tmp.name)
+            # 1. Seeded entity check (A1 Bulgaria)
+            a1 = reg.get("131468980")
+            assert a1 is not None
+            assert "А1 БЪЛГАРИЯ" in a1["company_name"]
+            assert a1["vat_status"] == "REGISTERED"
+
+            # 2. Upsert a custom local entity
+            reg.upsert(
+                eik="123456789",
+                company_name="ТЕСТОВО ЛОКАЛНО ЕООД",
+                vat_status="REGISTERED",
+                vat_registration_date="2022-01-01",
+            )
+            custom = reg.get("123456789")
+            assert custom is not None
+            assert custom["company_name"] == "ТЕСТОВО ЛОКАЛНО ЕООД"
+            assert custom["vat_number"] == "BG123456789"
+
+    def test_seeded_bulgarian_utility_verification(self):
+        """Verify contractor verification uses LocalVatRegistry for seeded BG entities."""
+        # 131468980 is A1 Bulgaria (seeded in LocalVatRegistry, NOT in KNOWN_CONTRACTORS_MOCK_REGISTRY)
+        res = verify_contractor("131468980", country_code="BG", date_tax_event="2026-08-16", bypass_cache=True)
+        assert res.legal_status == CompanyStatus.ACTIVE
+        assert res.vat_status == VatRegistrationStatus.REGISTERED
+        assert res.is_valid_for_tax_credit is True
+        assert "LOCAL_VAT_REGISTRY" in res.source
+        assert "А1" in (res.company_name or "")
+
+    def test_unknown_eik_fail_secure_rejection(self):
+        """Verify that an unknown EIK with valid Mod-11 checksum fails secure without fake data."""
+        from invoice_core.normalizers import is_valid_eik9
+        unknown_eik = "100000001"
+        assert is_valid_eik9(unknown_eik) is True
+
+        verifier = ContractorVerifier(offline_mode=True)
+        res = verifier.verify_sync(unknown_eik, country_code="BG")
+        # Must FAIL SECURE: not approved for tax credit
+        assert res.is_valid_for_tax_credit is False
+        assert res.legal_status == CompanyStatus.UNKNOWN
+        assert res.vat_status == VatRegistrationStatus.UNKNOWN
+        assert res.source == "OFFLINE_UNVERIFIED"
+        assert any("не е намерен" in issue for issue in res.issues)
+
 
 
 # ---------------------------------------------------------------------------

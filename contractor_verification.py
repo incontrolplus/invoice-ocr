@@ -419,17 +419,182 @@ def _parse_date_robust(date_val: Any) -> Any:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Offline Local VAT Registry (НАП Отворени данни / SQLite)
+# ---------------------------------------------------------------------------
+
+DEFAULT_VAT_REGISTRY_DB = Path.home() / ".invoice_ocr" / "vat_registry.db"
+
+SEED_BULGARIAN_VAT_ENTITIES = [
+    ("131468980", "А1 БЪЛГАРИЯ ЕАД", "BG131468980", "ACTIVE", "REGISTERED", "2005-09-01", None, "чл. 96 ЗДДС", "гр. София, ул. Кукуш 1"),
+    ("831642181", "БЪЛГАРСКА ТЕЛЕКОМУНИКАЦИОННА КОМПАНИЯ ЕАД (VIVACOM)", "BG831642181", "ACTIVE", "REGISTERED", "1994-04-01", None, "чл. 96 ЗДДС", "гр. София, бул. Цариградско шосе 115и"),
+    ("130408101", "ЙЕТТЕЛ БЪЛГАРИЯ ЕАД (YETTEL)", "BG130408101", "ACTIVE", "REGISTERED", "2001-05-15", None, "чл. 96 ЗДДС", "гр. София, ж.к. Младост 4, Бизнес Парк София"),
+    ("130277958", "ЕЛЕКТРОХОЛД ПРОДАЖБИ ЕАД", "BG130277958", "ACTIVE", "REGISTERED", "2006-11-01", None, "чл. 96 ЗДДС", "гр. София, бул. Цариградско шосе 159"),
+    ("123659269", "ЕВН БЪЛГАРИЯ ЕЛЕКТРОСНАБДЯВАНЕ ЕАД", "BG123659269", "ACTIVE", "REGISTERED", "2006-11-01", None, "чл. 96 ЗДДС", "гр. Пловдив, ул. Христо Г. Данов 37"),
+    ("103533691", "ЕНЕРГО-ПРО ПРОДАЖБИ АД", "BG103533691", "ACTIVE", "REGISTERED", "2006-11-01", None, "чл. 96 ЗДДС", "гр. Варна, бул. Владислав Варненчик 258"),
+    ("831609046", "ТОПЛОФИКАЦИЯ СОФИЯ ЕАД", "BG831609046", "ACTIVE", "REGISTERED", "1994-04-01", None, "чл. 96 ЗДДС", "гр. София, ул. Ястребец 23Б"),
+    ("175324639", "БУЛГАРГАЗ ЕАД", "BG175324639", "ACTIVE", "REGISTERED", "2007-01-15", None, "чл. 96 ЗДДС", "гр. София, бул. Панчо Владигеров 66"),
+    ("130175000", "СОФИЙСКА ВОДА АД", "BG130175000", "ACTIVE", "REGISTERED", "2000-10-01", None, "чл. 96 ЗДДС", "гр. София, ж.к. Младост 4, Бизнес Парк София"),
+    ("000761458", "БЪЛГАРСКИ ПОЩИ ЕАД", "BG000761458", "ACTIVE", "REGISTERED", "1994-04-01", None, "чл. 96 ЗДДС", "гр. София, ул. Академик Стефан Младенов 1"),
+    ("131341771", "СПИДИ АД", "BG131341771", "ACTIVE", "REGISTERED", "2004-12-01", None, "чл. 96 ЗДДС", "гр. София, София Парк"),
+    ("117041887", "ЕКОНТ ЕКСПРЕС ООД", "BG117041887", "ACTIVE", "REGISTERED", "2000-05-18", None, "чл. 96 ЗДДС", "гр. Русе, бул. Славянски 16"),
+    ("131129282", "КАУФЛАНД БЪЛГАРИЯ ЕООД ЕНД КО КД", "BG131129282", "ACTIVE", "REGISTERED", "2003-09-01", None, "чл. 96 ЗДДС", "гр. София, ул. Скопие 1"),
+    ("131071587", "ЛИДЛ БЪЛГАРИЯ ЕООД ЕНД КО КД", "BG131071587", "ACTIVE", "REGISTERED", "2005-03-01", None, "чл. 96 ЗДДС", "с. Равно поле, Индустриална зона"),
+    ("130007884", "БИЛЛА БЪЛГАРИЯ ЕООД", "BG130007884", "ACTIVE", "REGISTERED", "2000-10-01", None, "чл. 96 ЗДДС", "гр. София, бул. България 55"),
+    ("831496285", "ШЕЛ БЪЛГАРИЯ ЕАД", "BG831496285", "ACTIVE", "REGISTERED", "1994-04-01", None, "чл. 96 ЗДДС", "гр. София, бул. Цариградско шосе 115Г"),
+    ("121752007", "ОМВ БЪЛГАРИЯ ООД", "BG121752007", "ACTIVE", "REGISTERED", "1998-11-01", None, "чл. 96 ЗДДС", "гр. София, бул. Цариградско шосе 90"),
+    ("130279640", "ЛУКОЙЛ БЪЛГАРИЯ ЕООД", "BG130279640", "ACTIVE", "REGISTERED", "1999-12-01", None, "чл. 96 ЗДДС", "гр. София, бул. Тодор Александров 42"),
+]
+
+
+class LocalVatRegistry:
+    """Offline SQLite store for registered Bulgarian VAT entities from NRA open data."""
+
+    def __init__(self, db_path: Path | str | None = None):
+        if db_path is None:
+            env_db = os.environ.get("NRA_VAT_REGISTRY_DB")
+            self.db_path = Path(env_db) if env_db else DEFAULT_VAT_REGISTRY_DB
+        else:
+            self.db_path = Path(db_path)
+        self._lock = threading.Lock()
+        self._init_db()
+
+    def _init_db(self) -> None:
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._lock, sqlite3.connect(self.db_path) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS nra_vat_registry (
+                        eik TEXT PRIMARY KEY,
+                        company_name TEXT,
+                        vat_number TEXT,
+                        legal_status TEXT DEFAULT 'ACTIVE',
+                        vat_status TEXT DEFAULT 'REGISTERED',
+                        vat_registration_date TEXT,
+                        vat_deregistration_date TEXT,
+                        vat_legal_basis TEXT,
+                        address TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_nra_vat_eik ON nra_vat_registry(eik)")
+
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM nra_vat_registry")
+                count = cursor.fetchone()[0]
+                if count == 0:
+                    cursor.executemany("""
+                        INSERT OR IGNORE INTO nra_vat_registry (
+                            eik, company_name, vat_number, legal_status, vat_status,
+                            vat_registration_date, vat_deregistration_date, vat_legal_basis, address
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, SEED_BULGARIAN_VAT_ENTITIES)
+                conn.commit()
+        except Exception as exc:
+            logger.warning("Could not initialize LocalVatRegistry at %s: %s", self.db_path, exc)
+
+    def get(self, eik: str) -> dict[str, Any] | None:
+        """Find entity by EIK in local SQLite registry."""
+        clean_eik = re.sub(r"\D", "", eik)
+        try:
+            with self._lock, sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT eik, company_name, vat_number, legal_status, vat_status, "
+                    "vat_registration_date, vat_deregistration_date, vat_legal_basis, address "
+                    "FROM nra_vat_registry WHERE eik = ?",
+                    (clean_eik,),
+                )
+                row = cur.fetchone()
+                if row:
+                    return dict(row)
+        except Exception as exc:
+            logger.warning("Failed querying LocalVatRegistry for %s: %s", clean_eik, exc)
+        return None
+
+    def upsert(
+        self,
+        eik: str,
+        company_name: str,
+        vat_number: str | None = None,
+        legal_status: str = "ACTIVE",
+        vat_status: str = "REGISTERED",
+        vat_registration_date: str | None = None,
+        vat_deregistration_date: str | None = None,
+        vat_legal_basis: str | None = None,
+        address: str | None = None,
+    ) -> None:
+        """Insert or update a registered entity in local SQLite store."""
+        clean_eik = re.sub(r"\D", "", eik)
+        if not vat_number:
+            vat_number = f"BG{clean_eik}"
+        try:
+            with self._lock, sqlite3.connect(self.db_path) as conn:
+                conn.execute("""
+                    INSERT INTO nra_vat_registry (
+                        eik, company_name, vat_number, legal_status, vat_status,
+                        vat_registration_date, vat_deregistration_date, vat_legal_basis, address
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(eik) DO UPDATE SET
+                        company_name=excluded.company_name,
+                        vat_number=excluded.vat_number,
+                        legal_status=excluded.legal_status,
+                        vat_status=excluded.vat_status,
+                        vat_registration_date=excluded.vat_registration_date,
+                        vat_deregistration_date=excluded.vat_deregistration_date,
+                        vat_legal_basis=excluded.vat_legal_basis,
+                        address=excluded.address,
+                        updated_at=CURRENT_TIMESTAMP
+                """, (
+                    clean_eik, company_name, vat_number, legal_status, vat_status,
+                    vat_registration_date, vat_deregistration_date, vat_legal_basis, address
+                ))
+                conn.commit()
+        except Exception as exc:
+            logger.warning("Failed upserting to LocalVatRegistry: %s", exc)
+
+    def import_from_csv(self, csv_path: Path | str, delimiter: str = ";") -> int:
+        """Import official NRA open data CSV dump into local registry."""
+        import csv
+        count = 0
+        path = Path(csv_path)
+        if not path.exists():
+            return 0
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            reader = csv.DictReader(f, delimiter=delimiter)
+            for row in reader:
+                eik = row.get("eik") or row.get("ЕИК") or row.get("bulstat") or row.get("БУЛСТАТ")
+                if not eik:
+                    continue
+                name = row.get("name") or row.get("НАИМЕНОВАНИЕ") or row.get("company_name", "")
+                reg_date = row.get("vat_date") or row.get("ДАТА_РЕГИСТРАЦИЯ") or row.get("registration_date")
+                dereg_date = row.get("dereg_date") or row.get("ДАТА_ДЕРЕГИСТРАЦИЯ") or row.get("deregistration_date")
+                status = "DEREGISTERED" if dereg_date else "REGISTERED"
+                self.upsert(
+                    eik=eik,
+                    company_name=name,
+                    vat_status=status,
+                    vat_registration_date=reg_date,
+                    vat_deregistration_date=dereg_date,
+                )
+                count += 1
+        return count
+
+
 class ContractorVerifier:
-    """Online verification service for Bulgarian and EU contractors."""
+    """Online and offline verification service for Bulgarian and EU contractors."""
 
     def __init__(
         self,
         cache_db_path: Path | str | None = None,
+        vat_registry_db_path: Path | str | None = None,
         cache_ttl: int = DEFAULT_CACHE_TTL_SECONDS,
         timeout: float = DEFAULT_REQUEST_TIMEOUT,
         offline_mode: bool = False,
     ):
         self.cache = ContractorCache(db_path=cache_db_path, ttl_seconds=cache_ttl)
+        self.vat_registry = LocalVatRegistry(db_path=vat_registry_db_path)
         self.timeout = timeout
         if not offline_mode:
             offline_mode = os.environ.get("OFFLINE_MODE", "0").lower() in ("1", "true", "yes") or \
@@ -630,33 +795,80 @@ class ContractorVerifier:
                 self._evaluate_date_tax_event(eval_res, date_tax_event)
                 return eval_res
 
-        if self.offline_mode:
-            try:
-                from invoice_core.vendor_profiles import get_vendor_profile
-                vp = get_vendor_profile(ident)
-            except Exception:
-                vp = None
+        # 4. Check Local Offline VAT Registry (if country is BG)
+        if country == "BG":
+            reg_entry = self.vat_registry.get(ident)
+            if reg_entry:
+                legal_st = CompanyStatus(reg_entry.get("legal_status", "ACTIVE"))
+                vat_st = VatRegistrationStatus(reg_entry.get("vat_status", "REGISTERED"))
+                issues: list[str] = []
+                is_valid_credit = True
+                if legal_st in (CompanyStatus.BANKRUPTCY, CompanyStatus.LIQUIDATION, CompanyStatus.DEREGISTERED_DELETED):
+                    is_valid_credit = False
+                    issues.append(f"Фирмата е в неактивен правен статус в Търговския регистър: {legal_st.value}")
+                if vat_st == VatRegistrationStatus.DEREGISTERED:
+                    is_valid_credit = False
+                    issues.append("Фирмата е ДЕРЕГИСТРИРАНА по ЗДДС в НАП.")
+                elif vat_st == VatRegistrationStatus.NOT_REGISTERED:
+                    is_valid_credit = False
+                    issues.append("Фирмата НЕ Е регистрирана по ЗДДС.")
 
-            if vp:
                 res = ContractorVerificationResult(
                     country_code=country,
                     identifier=ident,
-                    company_name=vp.get("name"),
-                    legal_status=CompanyStatus.ACTIVE,
-                    vat_status=VatRegistrationStatus.REGISTERED,
-                    address=vp.get("address"),
-                    source="VENDOR_PROFILE",
-                    is_valid_for_tax_credit=True,
+                    company_name=reg_entry.get("company_name"),
+                    legal_status=legal_st,
+                    vat_status=vat_st,
+                    vat_registration_date=reg_entry.get("vat_registration_date"),
+                    vat_deregistration_date=reg_entry.get("vat_deregistration_date"),
+                    vat_legal_basis=reg_entry.get("vat_legal_basis"),
+                    address=reg_entry.get("address"),
+                    source="LOCAL_VAT_REGISTRY",
+                    is_valid_for_tax_credit=is_valid_credit,
+                    issues=issues,
+                    raw_data=reg_entry,
                 )
-            else:
-                res = ContractorVerificationResult(
-                    country_code=country,
-                    identifier=ident,
-                    legal_status=CompanyStatus.ACTIVE,
-                    vat_status=VatRegistrationStatus.REGISTERED,
-                    source="OFFLINE_FALLBACK",
-                    is_valid_for_tax_credit=True,
-                )
+                self._evaluate_date_tax_event(res, date_tax_event)
+                self.cache.set(res)
+                return res
+
+        # 5. Check Vendor Profiles (YAML configurations)
+        try:
+            from invoice_core.vendor_profiles import get_vendor_profile
+            vp = get_vendor_profile(ident)
+        except Exception:
+            vp = None
+
+        if vp:
+            res = ContractorVerificationResult(
+                country_code=country,
+                identifier=ident,
+                company_name=vp.get("name"),
+                legal_status=CompanyStatus.ACTIVE,
+                vat_status=VatRegistrationStatus.REGISTERED,
+                address=vp.get("address"),
+                source="VENDOR_PROFILE",
+                is_valid_for_tax_credit=True,
+            )
+            self._evaluate_date_tax_event(res, date_tax_event)
+            self.cache.set(res)
+            return res
+
+        # 6. Offline Mode Fail-Secure Exit
+        if self.offline_mode:
+            issues = [
+                f"Контрагент с ЕИК '{ident}' не е намерен в локалния регистър на НАП или вендор профилите "
+                "(необходима е ръчна верификация за данъчен кредит)."
+            ]
+            res = ContractorVerificationResult(
+                country_code=country,
+                identifier=ident,
+                legal_status=CompanyStatus.UNKNOWN,
+                vat_status=VatRegistrationStatus.UNKNOWN,
+                source="OFFLINE_UNVERIFIED",
+                is_valid_for_tax_credit=False,
+                issues=issues,
+            )
             self._evaluate_date_tax_event(res, date_tax_event)
             return res
 
@@ -771,14 +983,53 @@ class ContractorVerifier:
                 logger.warning("Online NRA query failed for EIK %s: %s", eik, exc)
                 issues.append(f"Връзката с регистъра на НАП е неуспешна: {exc}")
 
+        # Check Local Offline VAT Registry before failing secure
+        reg_entry = self.vat_registry.get(eik)
+        if reg_entry:
+            legal_st = CompanyStatus(reg_entry.get("legal_status", "ACTIVE"))
+            vat_st = VatRegistrationStatus(reg_entry.get("vat_status", "REGISTERED"))
+            is_valid_credit = True
+            if legal_st in (CompanyStatus.BANKRUPTCY, CompanyStatus.LIQUIDATION, CompanyStatus.DEREGISTERED_DELETED):
+                is_valid_credit = False
+                issues.append(f"Фирмата е в неактивен правен статус в Търговския регистър: {legal_st.value}")
+            if vat_st == VatRegistrationStatus.DEREGISTERED:
+                is_valid_credit = False
+                issues.append("Фирмата е ДЕРЕГИСТРИРАНА по ЗДДС в НАП.")
+            elif vat_st == VatRegistrationStatus.NOT_REGISTERED:
+                is_valid_credit = False
+                issues.append("Фирмата НЕ Е регистрирана по ЗДДС.")
+
+            res = ContractorVerificationResult(
+                country_code="BG",
+                identifier=eik,
+                company_name=reg_entry.get("company_name"),
+                legal_status=legal_st,
+                vat_status=vat_st,
+                vat_registration_date=reg_entry.get("vat_registration_date"),
+                vat_deregistration_date=reg_entry.get("vat_deregistration_date"),
+                vat_legal_basis=reg_entry.get("vat_legal_basis"),
+                address=reg_entry.get("address"),
+                source="LOCAL_VAT_REGISTRY",
+                is_valid_for_tax_credit=is_valid_credit,
+                issues=issues,
+                raw_data=reg_entry,
+            )
+            self._evaluate_date_tax_event(res, date_tax_event)
+            self.cache.set(res)
+            return res
+
+        # When online NRA query is not configured or unavailable and entity not in local DB
+        issues.append(
+            f"Контрагент с ЕИК '{eik}' не е намерен в регистъра на НАП или локалната база данни. "
+            "Изисква се ръчно потвърждение преди ползване на данъчен кредит."
+        )
         res = ContractorVerificationResult(
             country_code="BG",
             identifier=eik,
-            legal_status=CompanyStatus.ACTIVE,
-            vat_status=VatRegistrationStatus.REGISTERED,
-            vat_registration_date="2010-01-01",
-            source="NRA_PUBLIC_REGISTRY",
-            is_valid_for_tax_credit=True,
+            legal_status=CompanyStatus.UNKNOWN,
+            vat_status=VatRegistrationStatus.UNKNOWN,
+            source="OFFLINE_UNVERIFIED",
+            is_valid_for_tax_credit=False,
             issues=issues,
         )
         self._evaluate_date_tax_event(res, date_tax_event)

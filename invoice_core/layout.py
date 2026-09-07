@@ -21,6 +21,7 @@ from .constants import (
 )
 from .models import LogicalBlock, LogicalLine, OcrToken, TableColumn, TableRegion
 from .normalizers import clean_ocr_artifacts, is_recipient_keyword, is_supplier_keyword, parse_money
+from .vendor_profiles import is_dot_matrix_vendor
 
 logger = logging.getLogger("invoice_ocr")
 
@@ -364,7 +365,7 @@ def resolve_party_orientation(
         if "мобилен клиент" in l.text_lower:
             continue
         txt_low = l.text_lower
-        if "детелина" in txt_low or "114609507" in txt_low:
+        if is_dot_matrix_vendor(txt_low):
             if l.center_x >= mid_x:
                 right_supp += 5
             else:

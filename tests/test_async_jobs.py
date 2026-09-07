@@ -174,6 +174,91 @@ class TestAsyncJobs(unittest.TestCase):
         get_resp = self.client.get(f"/v1/jobs/{job_id}")
         self.assertEqual(get_resp.status_code, 404)
 
+    def test_orphaned_job_reconciliation_on_startup(self):
+        """Test that uncompleted jobs left in processing or queued state are reconciled to interrupted on startup."""
+        from database import get_db_session, PersistentJobRecord
+        from api_server import JobManager, JobStatus
+
+        orphan_job_id = "orphan_proc_test_999"
+        queued_job_id = "orphan_queued_test_998"
+
+        with get_db_session() as db:
+            # Clean up if existed
+            db.query(PersistentJobRecord).filter(PersistentJobRecord.job_id.in_([orphan_job_id, queued_job_id])).delete()
+            db.commit()
+
+            rec1 = PersistentJobRecord(
+                job_id=orphan_job_id,
+                status=JobStatus.PROCESSING.value,
+                request_type="batch-dir",
+                created_at=time.time() - 100,
+                started_at=time.time() - 90,
+            )
+            rec2 = PersistentJobRecord(
+                job_id=queued_job_id,
+                status=JobStatus.QUEUED.value,
+                request_type="batch-dir",
+                created_at=time.time() - 50,
+            )
+            db.add_all([rec1, rec2])
+            db.commit()
+
+        # Instantiate fresh manager to trigger _load_from_db reconciliation
+        fresh_mgr = JobManager(max_history=100)
+        job1 = fresh_mgr.get_job(orphan_job_id)
+        job2 = fresh_mgr.get_job(queued_job_id)
+
+        self.assertIsNotNone(job1)
+        self.assertEqual(job1["status"], JobStatus.INTERRUPTED.value)
+        self.assertIn("interrupted", job1["error"].lower())
+
+        self.assertIsNotNone(job2)
+        self.assertEqual(job2["status"], JobStatus.INTERRUPTED.value)
+
+        # Cleanup
+        with get_db_session() as db:
+            db.query(PersistentJobRecord).filter(PersistentJobRecord.job_id.in_([orphan_job_id, queued_job_id])).delete()
+            db.commit()
+
+    def test_retry_interrupted_or_failed_job(self):
+        """Test POST /v1/jobs/{job_id}/retry resets interrupted or failed job to queued."""
+        from database import get_db_session, PersistentJobRecord
+        from api_server import JobStatus
+
+        retry_job_id = "job_to_retry_111"
+        with get_db_session() as db:
+            db.query(PersistentJobRecord).filter(PersistentJobRecord.job_id == retry_job_id).delete()
+            db.commit()
+            rec = PersistentJobRecord(
+                job_id=retry_job_id,
+                status=JobStatus.INTERRUPTED.value,
+                request_type="batch-dir",
+                created_at=time.time() - 60,
+                error_message="Interrupted by reboot",
+                metadata_json=json.dumps({"input_dir": "/tmp"}),
+            )
+            db.add(rec)
+            db.commit()
+
+        # Query job manager to load it
+        job_manager.get_job(retry_job_id)
+
+        retry_resp = self.client.post(f"/v1/jobs/{retry_job_id}/retry")
+        self.assertEqual(retry_resp.status_code, 202)
+        data = retry_resp.json()
+        self.assertEqual(data["status"], "queued")
+        self.assertIn("re-queued", data["message"])
+
+        # Check job status in manager
+        j = job_manager.get_job(retry_job_id)
+        self.assertIn(j["status"], [JobStatus.QUEUED.value, JobStatus.PROCESSING.value, JobStatus.COMPLETED.value, JobStatus.FAILED.value])
+        self.assertIsNone(j["error"])
+
+        # Clean up
+        with get_db_session() as db:
+            db.query(PersistentJobRecord).filter(PersistentJobRecord.job_id == retry_job_id).delete()
+            db.commit()
+
 
 if __name__ == "__main__":
     unittest.main()
