@@ -1,7 +1,7 @@
 """Bulgarian Invoice OCR & Document Understanding Pipeline (Core Package)."""
 from __future__ import annotations
 
-from . import constants, currency, tesseract_env, models, normalizers, ingestion, preprocessing, ocr_passes, layout, classification, extraction, table_recovery, financials, validation, cache, pipeline, batch, cli, vendor_profiles, microinvest_export
+from . import constants, currency, tesseract_env, models, normalizers, ingestion, preprocessing, ocr_passes, layout, classification, extraction, table_recovery, financials, validation, cache, pipeline, batch, cli, vendor_profiles, microinvest_export, local_llm
 
 from .constants import (
     ALL_COLUMN_SYNONYMS_SORTED,

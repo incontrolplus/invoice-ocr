@@ -11,7 +11,10 @@ debug_*.txt
 test_script.py
 .stored_documents/
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 .env
 .agents/
+

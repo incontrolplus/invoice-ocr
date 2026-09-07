@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -430,6 +431,9 @@ class ContractorVerifier:
     ):
         self.cache = ContractorCache(db_path=cache_db_path, ttl_seconds=cache_ttl)
         self.timeout = timeout
+        if not offline_mode:
+            offline_mode = os.environ.get("OFFLINE_MODE", "0").lower() in ("1", "true", "yes") or \
+                           os.environ.get("LOCAL_ONLY", "0").lower() in ("1", "true", "yes")
         self.offline_mode = offline_mode
         self._mock_registry = dict(KNOWN_CONTRACTORS_MOCK_REGISTRY)
 
@@ -627,14 +631,32 @@ class ContractorVerifier:
                 return eval_res
 
         if self.offline_mode:
-            res = ContractorVerificationResult(
-                country_code=country,
-                identifier=ident,
-                legal_status=CompanyStatus.ACTIVE,
-                vat_status=VatRegistrationStatus.REGISTERED,
-                source="OFFLINE_FALLBACK",
-                is_valid_for_tax_credit=True,
-            )
+            try:
+                from invoice_core.vendor_profiles import get_vendor_profile
+                vp = get_vendor_profile(ident)
+            except Exception:
+                vp = None
+
+            if vp:
+                res = ContractorVerificationResult(
+                    country_code=country,
+                    identifier=ident,
+                    company_name=vp.get("name"),
+                    legal_status=CompanyStatus.ACTIVE,
+                    vat_status=VatRegistrationStatus.REGISTERED,
+                    address=vp.get("address"),
+                    source="VENDOR_PROFILE",
+                    is_valid_for_tax_credit=True,
+                )
+            else:
+                res = ContractorVerificationResult(
+                    country_code=country,
+                    identifier=ident,
+                    legal_status=CompanyStatus.ACTIVE,
+                    vat_status=VatRegistrationStatus.REGISTERED,
+                    source="OFFLINE_FALLBACK",
+                    is_valid_for_tax_credit=True,
+                )
             self._evaluate_date_tax_event(res, date_tax_event)
             return res
 

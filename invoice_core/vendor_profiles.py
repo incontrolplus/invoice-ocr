@@ -170,4 +170,57 @@ def reset_vendor_profiles_cache() -> None:
     _BANKING_CACHE = None
 
 
+def get_vendor_profile(identifier: str) -> dict[str, Any] | None:
+    """Find a vendor profile by ID, EIK, or keyword."""
+    if not identifier:
+        return None
+    ident = str(identifier).strip().lower()
+    profiles = get_vendor_profiles()
+    # 1. By ID
+    if ident in profiles:
+        p = profiles[ident]
+        return {
+            "id": p.id,
+            "name": p.name,
+            "eik": p.eik,
+            "vat_number": p.vat_number,
+            "address": p.address,
+        }
+    # 2. By EIK
+    for p in profiles.values():
+        if p.eik == ident or ident in p.alternate_eiks:
+            return {
+                "id": p.id,
+                "name": p.name,
+                "eik": p.eik,
+                "vat_number": p.vat_number,
+                "address": p.address,
+            }
+    # 3. By name or keyword
+    for p in profiles.values():
+        if ident in p.name.lower() or any(k in ident or ident in k for k in p.keywords):
+            return {
+                "id": p.id,
+                "name": p.name,
+                "eik": p.eik,
+                "vat_number": p.vat_number,
+                "address": p.address,
+            }
+    return None
+
+
+def list_known_profiles() -> list[dict[str, Any]]:
+    """Return all known vendor profiles as simple dicts."""
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "eik": p.eik,
+            "vat_number": p.vat_number,
+            "address": p.address,
+        }
+        for p in get_vendor_profiles().values()
+    ]
+
+
 KNOWN_SUPPLIER_PROFILES = get_known_supplier_profiles()
