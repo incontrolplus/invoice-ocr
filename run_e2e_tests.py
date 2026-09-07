@@ -80,11 +80,24 @@ def main() -> int:
         help="Execute only tests from specified tier (1, 2, 3, or 4)",
     )
     parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Execute entire project test suite via pytest (unit, milestone, and E2E)",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Display detailed per-test execution information",
     )
     args = parser.parse_args()
+
+    if args.all:
+        import pytest
+        pytest_args = ["-v"] if args.verbose else []
+        print("=" * 70)
+        print("🇧🇬 RUNNING ENTIRE PROJECT TEST SUITE (pytest)")
+        print("=" * 70)
+        return pytest.main(pytest_args)
 
     tiers_to_run = [args.tier] if args.tier else [1, 2, 3, 4]
 

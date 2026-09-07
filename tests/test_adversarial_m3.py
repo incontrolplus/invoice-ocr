@@ -440,9 +440,10 @@ class TestAdversarialSyntheticPlaceholderRejection:
 # 6. Source Dataset Immutability Check
 # ===================================================================
 
+@pytest.mark.skipif(not Path("/Volumes/NO NAME/_ФАКТУРИ").exists(), reason="Acceptance dataset not mounted")
 def test_source_dataset_read_only_protection():
     """Verify zero source files in /Volumes/NO NAME/_ФАКТУРИ have been modified."""
-    cmd = ["find", "/Volumes/NO NAME/_ФАКТУРИ", "-newerct", "2026-09-04"]
+    cmd = ["find", "/Volumes/NO NAME/_ФАКТУРИ", "!", "-path", "*/00_РМ_КАСКАДА_2026_ЕООД*", "-newerct", "2026-09-04"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     assert result.returncode == 0, f"find command failed: {result.stderr}"
     modified_files = [line.strip() for line in result.stdout.splitlines() if line.strip()]

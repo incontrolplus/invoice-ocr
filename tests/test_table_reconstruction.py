@@ -371,3 +371,179 @@ class TestLiveAcceptanceTableReconstruction:
         import invoice_ocr as iocr
         inv = iocr.process_invoice(KAPINA_DIR / "капина-03.pdf")
         assert len(inv.line_items) >= 10, f"Expected >= 10 items, got {len(inv.line_items)}"
+
+
+# ===================================================================
+# 7. Distributor / Warehouse Tables: SKU Filtering & Column Cross-Validation
+# ===================================================================
+
+class TestDistributorTableAndSkuClassification:
+    """Tests for Problem #2 (P0): 5-8 digit SKU filtering and column cross-mathematical validation."""
+
+    def test_5_to_8_digit_integer_rejected_as_quantity(self):
+        """5-8 digit integers (SKUs / barcodes / LOTs) must not be accepted as quantity."""
+        from invoice_ocr import _sanitize_line_item_candidate
+
+        # 5-8 digit integers rejected as quantity without matching expected_val
+        assert _sanitize_line_item_candidate("24352", is_qty=True) is None
+        assert _sanitize_line_item_candidate("1081207", is_qty=True) is None
+        assert _sanitize_line_item_candidate("7720107", is_qty=True) is None
+        assert _sanitize_line_item_candidate("7774645", is_qty=True) is None
+
+        # Standard decimal quantities and small integers remain valid
+        assert _sanitize_line_item_candidate("12", is_qty=True) == Decimal("12")
+        assert _sanitize_line_item_candidate("1.841", is_qty=True) == Decimal("1.841")
+        assert _sanitize_line_item_candidate("100.000", is_qty=True) == Decimal("100")
+
+    def test_extract_line_items_routes_sku_to_article_code(self):
+        """extract_line_items routes 5-8 digit integers to article_code / sku and avoids 0.00 price calculation."""
+        cols = [
+            TableColumn(header_text="№", semantic_type="index", x_center=50, x_left=0, x_right=100),
+            TableColumn(header_text="Артикул", semantic_type="description", x_center=300, x_left=100, x_right=500),
+            TableColumn(header_text="Код/Кол.", semantic_type="quantity", x_center=600, x_left=500, x_right=700),
+            TableColumn(header_text="Сума", semantic_type="total_price", x_center=800, x_left=700, x_right=900),
+        ]
+        table = TableRegion(
+            columns=cols,
+            header_line=LogicalLine(tokens=[OcrToken(text="Артикул", conf=90.0, bbox=(100, 100, 100, 20))]),
+            data_lines=[
+                LogicalLine(tokens=[
+                    OcrToken(text="1", conf=90.0, bbox=(50, 150, 15, 20)),
+                    OcrToken(text="Тестов Продукт", conf=90.0, bbox=(200, 150, 150, 20)),
+                    OcrToken(text="24352", conf=90.0, bbox=(600, 150, 50, 20)),
+                    OcrToken(text="8.00", conf=90.0, bbox=(800, 150, 40, 20)),
+                ]),
+            ],
+            page_number=1,
+        )
+        items = extract_line_items([table], table.data_lines)
+        assert len(items) == 1
+        it = items[0]
+        # 24352 is routed to article_code/sku, NOT left as quantity
+        assert it.article_code == "24352"
+        assert it.sku == "24352"
+        assert it.quantity != Decimal("24352")
+        # Unit price must NOT be calculated as 0.00
+        assert it.unit_price_net.amount != Decimal("0.00")
+
+    def test_cross_mathematical_column_validation(self):
+        """Cross-mathematical verification correctly identifies true quantity column over packaging."""
+        from invoice_ocr import _cross_validate_table_columns
+
+        cols = [
+            TableColumn(header_text="№", semantic_type="index", x_center=50, x_left=0, x_right=100),
+            TableColumn(header_text="Описание", semantic_type="description", x_center=300, x_left=100, x_right=500),
+            TableColumn(header_text="Съд/бр", semantic_type="packaging", x_center=600, x_left=500, x_right=700),
+            TableColumn(header_text="Цена", semantic_type="unit_price", x_center=800, x_left=700, x_right=900),
+            TableColumn(header_text="Количество", semantic_type="quantity", x_center=1000, x_left=900, x_right=1100),
+            TableColumn(header_text="Сума нето", semantic_type="total_price", x_center=1200, x_left=1100, x_right=1300),
+        ]
+        data_lines = [
+            LogicalLine(tokens=[
+                OcrToken(text="1", conf=90.0, bbox=(50, 150, 15, 20)),
+                OcrToken(text="Сок Ябълка", conf=90.0, bbox=(200, 150, 100, 20)),
+                OcrToken(text="6", conf=90.0, bbox=(600, 150, 20, 20)),
+                OcrToken(text="2.50", conf=90.0, bbox=(800, 150, 40, 20)),
+                OcrToken(text="12", conf=90.0, bbox=(1000, 150, 30, 20)),
+                OcrToken(text="30.00", conf=90.0, bbox=(1200, 150, 50, 20)),
+            ]),
+            LogicalLine(tokens=[
+                OcrToken(text="2", conf=90.0, bbox=(50, 180, 15, 20)),
+                OcrToken(text="Сок Портокал", conf=90.0, bbox=(200, 180, 100, 20)),
+                OcrToken(text="6", conf=90.0, bbox=(600, 180, 20, 20)),
+                OcrToken(text="3.00", conf=90.0, bbox=(800, 180, 40, 20)),
+                OcrToken(text="10", conf=90.0, bbox=(1000, 180, 30, 20)),
+                OcrToken(text="30.00", conf=90.0, bbox=(1200, 180, 50, 20)),
+            ]),
+        ]
+        # Initially simulate packaging misclassified as quantity
+        cols[2].semantic_type = "quantity"
+        cols[4].semantic_type = "packaging"
+
+        validated_cols = _cross_validate_table_columns(cols, data_lines)
+        qty_col = [c for c in validated_cols if c.semantic_type == "quantity"][0]
+        assert qty_col.x_center == 1000
+        assert qty_col.header_text == "Количество"
+
+    def test_kapina_03_dot_matrix_line_item_and_total_reconciliation(self):
+        """Regression test for Goal 2: капина-03 line item 13 dot matrix token and zero validation errors.
+
+        КИСЕЛО МЛЯКО БОР ЧВОР has dot-matrix token 77777050|000 which must resolve to
+        unit price 0.50, quantity 2.000, and total price 1.00, resulting in exact
+        line item sum 123.17 matching tax base 123.17 and eliminating LINE_ITEMS_TOTAL_MISMATCH.
+        """
+        import json
+        from invoice_ocr import (
+            OcrToken,
+            FinancialSummary,
+            MoneyAmount,
+            normalize_ocr_tokens,
+            group_tokens_into_lines,
+            detect_table_regions,
+            extract_line_items,
+            extract_party,
+            validate_invoice,
+            _sanitize_line_item_candidate,
+        )
+
+        # 1. Verify candidate sanitizer splits pipes and strips dot-matrix 7s prefix
+        cand = _sanitize_line_item_candidate("77777050|000")
+        assert cand == Decimal("0.5")
+
+        # 2. Verify against cached evidence tokens from капина-03.json
+        res_file = Path(__file__).resolve().parent.parent / "results" / "капина-03.json"
+        assert res_file.exists(), "results/капина-03.json must exist"
+
+        with open(res_file, encoding="utf-8") as f:
+            data = json.load(f)
+
+        raw_toks = [
+            OcrToken(
+                text=t["text"],
+                conf=t["conf"],
+                bbox=tuple(t["bbox"]),
+                page_number=t["page_number"],
+                is_low_confidence=t.get("is_low_confidence", False),
+            )
+            for p in data["raw_ocr_evidence"]["pages"]
+            for t in p["tokens"]
+        ]
+
+        norm_toks = normalize_ocr_tokens(raw_toks)
+        lines = group_tokens_into_lines(norm_toks)
+        tables = detect_table_regions(lines, norm_toks)
+
+        fs = FinancialSummary(
+            tax_base=MoneyAmount(Decimal("123.17"), "EUR"),
+            vat_amount=MoneyAmount(Decimal("24.65"), "EUR"),
+            total_amount_due=MoneyAmount(Decimal("147.83"), "EUR"),
+        )
+
+        items = extract_line_items(tables, lines, financial_summary=fs)
+        assert len(items) == 17, f"Expected 17 line items, got {len(items)}"
+
+        # Item 13: КИСЕЛО МЛЯКО БОР ЧВОР
+        item13 = items[12]
+        assert "КИСЕЛО" in (item13.description or "")
+        assert item13.quantity == Decimal("2.000")
+        assert item13.unit_price_net.amount == Decimal("0.50")
+        assert item13.total_price_net.amount == Decimal("1.00")
+
+        # Line items sum matches tax base exactly (0.00 difference)
+        line_sum = sum(it.total_price_net.amount for it in items if it.total_price_net.amount is not None)
+        assert line_sum == Decimal("123.17")
+
+        inv = Invoice()
+        inv.invoice_metadata.invoice_number = "1100124013"
+        inv.invoice_metadata.date_issued = "2026-04-22"
+        inv.invoice_metadata.date_tax_event = "2026-04-22"
+        inv.supplier = extract_party(lines, norm_toks, "supplier")
+        inv.recipient = extract_party(lines, norm_toks, "recipient")
+        inv.financial_summary = fs
+        inv.line_items = items
+
+        val = validate_invoice(inv, norm_toks)
+        error_codes = [e.code for e in val.errors]
+        assert "LINE_ITEMS_TOTAL_MISMATCH" not in error_codes
+        assert len(error_codes) == 0
+

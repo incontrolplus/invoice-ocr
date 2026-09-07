@@ -63,8 +63,8 @@ class TestKapinaAcceptanceMultiPassAndFusion:
         norm_page, transform = normalize_page_geometry(page)
         variants = generate_preprocessing_variants(norm_page.image)
 
-        # Select clahe_gray target
-        target_img = next(img for name, img in variants if name == "clahe_gray")
+        # Select standard target
+        target_img = next(img for name, img in variants if name == "standard")
 
         p1_tokens = execute_ocr_pass(target_img, psm=3, lang="bul")
         p2_tokens = execute_ocr_pass(target_img, psm=11, lang="bul")
@@ -104,8 +104,8 @@ class TestKapinaAcceptanceMultiPassAndFusion:
         norm_page, _ = normalize_page_geometry(pages[0])
         variants = generate_preprocessing_variants(norm_page.image)
 
-        # Retrieve clahe_gray and minimal (raw grayscale)
-        clahe_img = next(img for name, img in variants if name == "clahe_gray")
+        # Retrieve standard and minimal (raw grayscale)
+        clahe_img = next(img for name, img in variants if name == "standard")
         raw_gray = next(img for name, img in variants if name == "minimal")
 
         # Contrast enhancement check
@@ -154,7 +154,7 @@ class TestKapinaAcceptanceMultiPassAndFusion:
             pages = load_document(KAPINA_DIR / fname)
             norm_page, _ = normalize_page_geometry(pages[0])
             variants = generate_preprocessing_variants(norm_page.image)
-            target_img = next(img for name, img in variants if name == "clahe_gray")
+            target_img = next(img for name, img in variants if name == "standard")
 
             p1 = execute_ocr_pass(target_img, psm=3, lang="bul")
             p2 = execute_ocr_pass(target_img, psm=11, lang="bul")

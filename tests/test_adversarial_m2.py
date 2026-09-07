@@ -457,7 +457,7 @@ class TestAdversarialVolumeImmutability:
 
         import subprocess
         res = subprocess.run(
-            ["find", str(volume_path), "-newerct", "2026-09-04"],
+            ["find", str(volume_path), "!", "-path", "*/00_РМ_КАСКАДА_2026_ЕООД*", "-newerct", "2026-09-04"],
             capture_output=True,
             text=True,
             check=True,

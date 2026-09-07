@@ -1,0 +1,12 @@
+# Toplivo Gas EOOD Profile
+id: toplivo
+name: "ТОПЛИВО ГАЗ ЕООД"
+eik: "130864186"
+vat_number: "BG130864186"
+invoice_number_series:
+  prefix: "0703"
+  length: 10
+keywords:
+  - "топливо"
+  - "топливо газ"
+  - "топаиво"
