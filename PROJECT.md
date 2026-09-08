@@ -495,3 +495,23 @@ In real-world accounting archives (e.g. `00_РМ_КАСКАДА_2026_ЕООД`),
     - Dedicated test suite `tests/test_legal_compliance_validator.py`: 23/23 tests passing (100%).
     - Full regression test suite: 815/815 tests passing cleanly across the entire repository.
 
+- **Problem #12: 24/7 Production Deployment on macmini-primary & Cloudflare Zero-Trust Ingress (Replacing Tailscale Endpoints)**:
+  - **Context & Motivation**:
+    1. *Workstation Independence & 24/7 Availability*: The application stack previously ran on a MacBook Air, which risked service interruption whenever the laptop slept, rebooted, or lost connectivity.
+    2. *Tailscale Ingress Limitations*: Internal mesh networking over Tailscale (`100.83.83.8:8000`) required client software on every device, lacked trusted public SSL certificates, prevented third-party webhook ingestion (e.g. from banks, Stripe, or cloud ERPs), and lacked DDoS/WAF protection.
+    3. *Production Ingress Requirement*: Real production operations require public HTTPS access under the verified domain `openbalancer.com` (`https://ocr.openbalancer.com`), backed by secrets securely maintained in Infisical on `macmini-primary` (Project "Hosting & Domains").
+  - **Implemented Solutions**:
+    1. *Production Stack on macmini-primary*:
+       - Audited host hardware: Apple M4 (10 cores), 16 GB RAM, 48+ GB host SSD free, 56 GB Colima disk free.
+       - Deployed hardened Docker stack: `invoice-ocr-api` (FastAPI + Tesseract + OpenCV + PyMuPDF) and `invoice-ocr-postgres` (PostgreSQL 16) with health checks, local-only port bindings, and memory safeguards. Total footprint ~288 MiB RAM.
+    2. *Automated Infisical Secret Decryption*:
+       - Programmatically queried and decrypted Cloudflare tokens from Infisical PostgreSQL (`infisical-db`) using AES-256-GCM and project KMS keys.
+       - Decrypted `CLOUDFLARE_INCONTROLPLUS_ACCOUNT_ID`, `CLOUDFLARE_INCONTROLPLUS_API_TOKEN`, and `CLOUDFLARE_DNS_TOKEN_INCONTROLPLUS`.
+    3. *Cloudflare Zero-Trust Ingress Routing*:
+       - Updated Cloudflare Tunnel `3ad98a23-0f99-4c53-9d5a-b09c65cdce28` (`n8n-ob-tunnel`) ingress rules to map `ocr.openbalancer.com` to `http://127.0.0.1:8000`.
+       - Detached legacy Pages custom domain binding from `finansprotect-org-openbalanc` via API.
+       - Configured CNAME DNS record `ocr.openbalancer.com -> 3ad98a23-0f99-4c53-9d5a-b09c65cdce28.cfargotunnel.com` with Cloudflare Edge proxying (`proxied=true`).
+  - **Verification**:
+    - Edge SSL Health Check: `curl -s https://ocr.openbalancer.com/health` returns `status: ok` in < 2ms.
+    - Interactive HITL Dashboard: `https://ocr.openbalancer.com/static/index.html` accessible globally over HTTPS.
+    - End-to-End Invoice Processing: Successfully uploaded and processed real Bulgarian invoice (`капина-01_page_1_norm.png`), extracting all 6 line items, identifying `Юробанк България АД`, validating Mod-97 IBAN and BIC, and confirming full statutory compliance.
