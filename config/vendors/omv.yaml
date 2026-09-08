@@ -1,0 +1,32 @@
+# OMV Bulgaria OOD Profile
+id: omv
+name: "ОМВ БЪЛГАРИЯ ООД"
+eik: "831101035"
+vat: "BG831101035"
+address: "гр. София 1784, бул. Цариградско шосе 115М, сграда Д"
+invoice_number_series:
+  prefix: "0"
+  length: 10
+keywords:
+  - "omv"
+  - "омв"
+  - "омв българия"
+table_anchors:
+  - "продукт"
+  - "артикул"
+  - "количество"
+  - "ед. цена"
+  - "стойност"
+  - "ддс"
+column_offsets:
+  description: [0.05, 0.48]
+  quantity: [0.48, 0.62]
+  unit_price: [0.62, 0.78]
+  total: [0.78, 0.95]
+fused_patterns:
+  - "831101035"
+dot_matrix: false
+banking:
+  - iban: "BG10STSA93000027446545"
+    bic: "STSABGSF"
+    bank_name: "Банка ДСК АД"

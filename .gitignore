@@ -17,4 +17,5 @@ test_script.py
 *.sqlite3
 .env
 .agents/
+.playwright-mcp/
 

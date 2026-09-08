@@ -8,9 +8,12 @@ and document management systems:
 - POST /api/v1/invoices/batch       - Upload and process multiple invoice files
 - POST /api/v1/invoices/batch-dir   - Batch process a server-side directory of invoices
 - POST /api/v1/invoices/validate    - Re-validate an existing invoice JSON payload
+- GET  /api/v1/vendors              - List loaded vendor profiles and configuration status
+- POST /api/v1/vendors/reload       - Dynamic hot-reload of vendor YAML profiles without restart
 """
 
 import argparse
+import asyncio
 import base64
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -43,7 +46,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import pytesseract
@@ -78,6 +81,12 @@ from invoice_ocr import (
     Party,
     PaymentDetails,
     TesseractLanguageMissingError,
+    DEFAULT_MAX_OCR_WORKERS,
+    OCRProcessPoolExecutor,
+    get_ocr_pool,
+    init_ocr_pool,
+    shutdown_ocr_pool,
+    iter_process_batch,
     ensure_tesseract_ready,
     get_installed_ocr_languages,
     process_batch,
@@ -135,6 +144,10 @@ async def lifespan(app: FastAPI):
     """Verify OCR engine, environment readiness, and database initialization on server startup."""
     setup_tessdata_prefix()
     init_db()
+    # Initialize isolated ProcessPoolExecutor for CPU-bound OCR workloads
+    ocr_workers = int(os.environ.get("MAX_OCR_WORKERS", str(min(os.cpu_count() or 4, 16))))
+    init_ocr_pool(max_workers=ocr_workers)
+    logger.info("Initialized OCR ProcessPoolExecutor with %d workers", ocr_workers)
     try:
         tess_ver = pytesseract.get_tesseract_version()
         ready, available, missing = verify_tesseract_languages(["bul", "eng"])
@@ -145,6 +158,9 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Tesseract startup check warning: %s", exc)
     yield
+    # Graceful shutdown of worker pool
+    logger.info("Shutting down OCR ProcessPoolExecutor...")
+    shutdown_ocr_pool(wait=True)
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +268,7 @@ class BatchDirRequest(BaseModel):
     use_cache: bool = Field(default=True, description="Enable OCR token caching")
     ocr_cache_dir: Optional[str] = Field(default=str(DEFAULT_OCR_CACHE_DIR), description="OCR token cache directory")
     async_mode: bool = Field(default=False, description="Queue as asynchronous background job and return job_id")
+    stream: bool = Field(default=False, description="Stream intermediate results as newline-delimited JSON (NDJSON)")
 
 
 class JobStatus(str, Enum):
@@ -337,6 +354,40 @@ class MicroinvestExportRequest(BaseModel):
     default_supplier_account: str = Field(default="401", description="Default supplier account for Delta Pro")
 
 
+class BusinessNavigatorExportRequest(BaseModel):
+    invoices: list[dict[str, Any]] = Field(..., description="List of invoice JSON payloads")
+    encoding: str = Field(default="windows-1251", description="File encoding (windows-1251 or utf-8)")
+
+
+class AjurExportRequest(BaseModel):
+    invoices: list[dict[str, Any]] = Field(..., description="List of invoice JSON payloads")
+    encoding: str = Field(default="windows-1251", description="File encoding (windows-1251 or utf-8)")
+
+
+class TaxPeriodValidationApiRequest(BaseModel):
+    invoices: list[dict[str, Any]] = Field(..., description="List of invoice JSON payloads to validate")
+    target_period: Optional[str] = Field(default=None, description="Target VAT period (e.g. 202608 or 2026-08)")
+
+
+class SupplierMappingRuleApiRequest(BaseModel):
+    eik: str = Field(..., description="Supplier EIK / BULSTAT or VAT number")
+    target_account: str = Field(..., description="Target accounting account (e.g. 6012, 6021, 3041)")
+    target_subledger: Optional[str] = Field(default=None, description="Optional analytical subledger code")
+    supplier_name: Optional[str] = Field(default="", description="Supplier name")
+    description: Optional[str] = Field(default="", description="Description of the rule")
+
+
+class KeywordMappingRuleApiRequest(BaseModel):
+    rule_id: str = Field(..., description="Unique rule identifier")
+    target_account: str = Field(..., description="Target accounting account (e.g. 6012, 6021, 3041)")
+    target_subledger: Optional[str] = Field(default=None, description="Optional analytical subledger code")
+    keywords: list[str] = Field(default_factory=list, description="List of keywords to match")
+    regex_pattern: Optional[str] = Field(default=None, description="Optional regular expression pattern")
+    description: Optional[str] = Field(default="", description="Description of the rule")
+    priority: int = Field(default=10, description="Rule priority (higher value = higher precedence)")
+
+
+
 # ---------------------------------------------------------------------------
 # Background Task Queue & Persistent Job Manager (Pillar 4 & 5, M12/M14)
 # ---------------------------------------------------------------------------
@@ -344,6 +395,13 @@ class MicroinvestExportRequest(BaseModel):
 class ApproveDocumentRequest(BaseModel):
     actor: str = Field(default="accountant", description="Name or identifier of accountant approving document")
     webhook_url: Optional[str] = Field(default=None, description="Optional ERP webhook URL to notify")
+
+
+class ApproveAndExportRequest(BaseModel):
+    corrections: Optional[dict[str, Any]] = Field(default=None, description="Manual field corrections applied via HITL interface")
+    actor: str = Field(default="accountant", description="Name or identifier of accountant approving document")
+    webhook_url: Optional[str] = Field(default=None, description="Optional ERP webhook URL to notify")
+    export_format: str = Field(default="all", description="Export type: pokupki, journal_entries, or all")
 
 
 class WebhookTestRequest(BaseModel):
@@ -668,6 +726,8 @@ def _dict_to_invoice(data: dict[str, Any]) -> Invoice:
         document_type=meta_d.get("document_type", DocumentType.INVOICE.value),
         is_credit_note=bool(meta_d.get("is_credit_note", False)),
         is_debit_note=bool(meta_d.get("is_debit_note", False)),
+        compiled_by=meta_d.get("compiled_by"),
+        received_by=meta_d.get("received_by"),
     )
     supplier = Party(
         name=sup_d.get("name"),
@@ -712,6 +772,10 @@ def _dict_to_invoice(data: dict[str, Any]) -> Invoice:
         iban=pay_d.get("iban"),
         bic=pay_d.get("bic"),
         due_date=pay_d.get("due_date"),
+        bank_code=pay_d.get("bank_code"),
+        is_iban_valid=pay_d.get("is_iban_valid"),
+        is_bic_valid=pay_d.get("is_bic_valid"),
+        bank_recognized=bool(pay_d.get("bank_recognized", False)),
     )
     return Invoice(
         invoice_metadata=meta,
@@ -870,14 +934,22 @@ async def process_single_invoice(
 
         dbg_path = Path(debug_dir) if debug else None
         start_time = time.perf_counter()
-        # Run CPU-intensive OCR pipeline in a threadpool to avoid blocking the event loop
-        invoice = await run_in_threadpool(
-            process_invoice,
-            tmp_path,
+        # Offload CPU-intensive OCR pipeline to isolated ProcessPoolExecutor to avoid blocking event loop
+        pool = get_ocr_pool()
+        res = await pool.submit_ocr_async(
+            file_path=tmp_path,
             debug_dir=dbg_path,
             lang=lang,
+            use_cache=True,
+            return_invoice_object=True,
         )
         proc_time = time.perf_counter() - start_time
+        if res.get("status") != "success" or res.get("invoice") is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"OCR processing failed: {res.get('error')}",
+            )
+        invoice = res["invoice"]
 
         full_result = _invoice_to_dict(invoice, include_raw_evidence=True)
         full_result["file_name"] = file.filename
@@ -922,6 +994,186 @@ async def process_single_invoice(
         tmp_path.unlink(missing_ok=True)
 
 
+async def _stream_uploaded_batch_generator(
+    tmp_in: Path,
+    tmp_out: Path,
+    lang: str,
+    workers: Optional[int],
+    use_cache: bool,
+    ocr_cache_dir: Optional[str],
+):
+    """Asynchronous streaming generator yielding NDJSON events for uploaded batch processing."""
+    try:
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+
+        def _worker_runner():
+            try:
+                for item in iter_process_batch(
+                    input_dir=tmp_in,
+                    output_dir=tmp_out,
+                    lang=lang,
+                    workers=workers,
+                    use_cache=use_cache,
+                    ocr_cache_dir=ocr_cache_dir,
+                    quiet=True,
+                ):
+                    loop.call_soon_threadsafe(queue.put_nowait, ("doc", item))
+                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+            except Exception as exc:
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", str(exc)))
+
+        fut = loop.run_in_executor(None, _worker_runner)
+
+        success_count = 0
+        failed_count = 0
+        total_count = 0
+
+        while True:
+            ev_type, payload = await queue.get()
+            if ev_type == "doc":
+                total_count += 1
+                status_str = payload.get("status", "unknown")
+                if status_str == "success":
+                    success_count += 1
+                else:
+                    failed_count += 1
+
+                doc_entry: dict[str, Any] = {
+                    "event": "document",
+                    "file": payload.get("file"),
+                    "status": status_str,
+                    "duration_seconds": payload.get("duration_seconds"),
+                    "worker_pid": payload.get("worker_pid"),
+                    "memory_rss_mb": payload.get("memory_rss_mb"),
+                    "memory_guard_triggered": payload.get("memory_guard_triggered"),
+                    "error": payload.get("error"),
+                }
+                inv = payload.get("invoice")
+                if inv:
+                    doc_entry["invoice_number"] = inv.invoice_metadata.invoice_number
+                    doc_entry["date_issued"] = inv.invoice_metadata.date_issued
+                    doc_entry["supplier"] = {
+                        "name": inv.supplier.name,
+                        "eik": inv.supplier.eik,
+                    }
+                    doc_entry["recipient"] = {
+                        "name": inv.recipient.name,
+                        "eik": inv.recipient.eik,
+                    }
+                    doc_entry["is_valid"] = inv.validation.is_valid
+                    tot = inv.financial_summary.total_amount_due.amount
+                    curr = inv.financial_summary.total_amount_due.currency or "BGN"
+                    doc_entry["total_amount_due"] = str(tot) if tot is not None else None
+                    doc_entry["currency"] = curr
+
+                yield (json.dumps(doc_entry, ensure_ascii=False) + "\n").encode("utf-8")
+
+            elif ev_type == "done":
+                summary_event = {
+                    "event": "summary",
+                    "total_documents": total_count,
+                    "processed_successfully": success_count,
+                    "failed": failed_count,
+                }
+                yield (json.dumps(summary_event, ensure_ascii=False) + "\n").encode("utf-8")
+                break
+            elif ev_type == "error":
+                yield (json.dumps({"event": "error", "error": payload}, ensure_ascii=False) + "\n").encode("utf-8")
+                break
+
+        await fut
+    finally:
+        shutil.rmtree(str(tmp_in), ignore_errors=True)
+        shutil.rmtree(str(tmp_out), ignore_errors=True)
+
+
+async def _stream_directory_batch_generator(
+    in_path: Path,
+    out_path: Path,
+    lang: str,
+    workers: Optional[int],
+    use_cache: bool,
+    ocr_cache_dir: Optional[str],
+):
+    """Asynchronous streaming generator yielding NDJSON events for directory batch processing."""
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+
+    def _worker_runner():
+        try:
+            for item in iter_process_batch(
+                input_dir=in_path,
+                output_dir=out_path,
+                lang=lang,
+                workers=workers,
+                use_cache=use_cache,
+                ocr_cache_dir=ocr_cache_dir,
+                quiet=True,
+            ):
+                loop.call_soon_threadsafe(queue.put_nowait, ("doc", item))
+            loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+        except Exception as exc:
+            loop.call_soon_threadsafe(queue.put_nowait, ("error", str(exc)))
+
+    fut = loop.run_in_executor(None, _worker_runner)
+
+    success_count = 0
+    failed_count = 0
+    total_count = 0
+
+    while True:
+        ev_type, payload = await queue.get()
+        if ev_type == "doc":
+            total_count += 1
+            status_str = payload.get("status", "unknown")
+            if status_str == "success":
+                success_count += 1
+            else:
+                failed_count += 1
+
+            doc_entry = {
+                "event": "document",
+                "file": payload.get("file"),
+                "status": status_str,
+                "duration_seconds": payload.get("duration_seconds"),
+                "worker_pid": payload.get("worker_pid"),
+                "memory_rss_mb": payload.get("memory_rss_mb"),
+                "memory_guard_triggered": payload.get("memory_guard_triggered"),
+                "error": payload.get("error"),
+            }
+            inv = payload.get("invoice")
+            if inv:
+                doc_entry["invoice_number"] = inv.invoice_metadata.invoice_number
+                doc_entry["date_issued"] = inv.invoice_metadata.date_issued
+                doc_entry["supplier"] = {
+                    "name": inv.supplier.name,
+                    "eik": inv.supplier.eik,
+                }
+                doc_entry["is_valid"] = inv.validation.is_valid
+                tot = inv.financial_summary.total_amount_due.amount
+                curr = inv.financial_summary.total_amount_due.currency or "BGN"
+                doc_entry["total_amount_due"] = str(tot) if tot is not None else None
+                doc_entry["currency"] = curr
+
+            yield (json.dumps(doc_entry, ensure_ascii=False) + "\n").encode("utf-8")
+
+        elif ev_type == "done":
+            summary_event = {
+                "event": "summary",
+                "total_documents": total_count,
+                "processed_successfully": success_count,
+                "failed": failed_count,
+            }
+            yield (json.dumps(summary_event, ensure_ascii=False) + "\n").encode("utf-8")
+            break
+        elif ev_type == "error":
+            yield (json.dumps({"event": "error", "error": payload}, ensure_ascii=False) + "\n").encode("utf-8")
+            break
+
+    await fut
+
+
 @app.post(
     "/api/v1/invoices/batch",
     summary="Upload & Process Multiple Invoice Files",
@@ -936,6 +1188,7 @@ async def process_batch_files(
     use_cache: bool = Query(default=True, description="Enable OCR token caching"),
     ocr_cache_dir: Optional[str] = Query(default=str(DEFAULT_OCR_CACHE_DIR), description="OCR token cache directory"),
     async_mode: bool = Query(default=False, description="Queue as background task and return job_id immediately"),
+    stream: bool = Query(default=False, description="Stream intermediate results as newline-delimited JSON (NDJSON)"),
 ):
     """Upload multiple invoice files in a single request and receive an aggregated accounting batch report."""
     if not files:
@@ -968,6 +1221,19 @@ async def process_batch_files(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="None of the uploaded files have supported extensions (.pdf, .png, .jpg, .jpeg)",
+        )
+
+    if stream:
+        return StreamingResponse(
+            _stream_uploaded_batch_generator(
+                tmp_in=tmp_in,
+                tmp_out=tmp_out,
+                lang=lang,
+                workers=workers,
+                use_cache=use_cache,
+                ocr_cache_dir=ocr_cache_dir,
+            ),
+            media_type="application/x-ndjson",
         )
 
     if async_mode:
@@ -1009,6 +1275,60 @@ async def process_batch_files(
 
 
 @app.post(
+    "/api/v1/invoices/batch/stream",
+    summary="Stream Upload & Process Multiple Invoice Files (NDJSON)",
+    tags=["Invoices"],
+)
+async def process_batch_files_stream(
+    files: list[UploadFile] = File(..., description="Multiple invoice files to process"),
+    lang: str = Query(default=DEFAULT_OCR_LANG, description="OCR language(s)"),
+    workers: Optional[int] = Query(default=None, description="Number of worker processes for parallel batch execution"),
+    use_cache: bool = Query(default=True, description="Enable OCR token caching"),
+    ocr_cache_dir: Optional[str] = Query(default=str(DEFAULT_OCR_CACHE_DIR), description="OCR token cache directory"),
+):
+    """Stream processing of multiple uploaded invoices with real-time NDJSON events without buffering batch in RAM."""
+    if not files:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files provided in batch request")
+
+    tmp_in_str = tempfile.mkdtemp(prefix="batch_in_")
+    tmp_out_str = tempfile.mkdtemp(prefix="batch_out_")
+    tmp_in = Path(tmp_in_str)
+    tmp_out = Path(tmp_out_str)
+
+    saved_files = []
+    for f in files:
+        if not f.filename:
+            continue
+        suffix = Path(f.filename).suffix.lower()
+        if suffix not in SUPPORTED_EXTENSIONS:
+            continue
+        dest = tmp_in / f.filename
+        with dest.open("wb") as buffer:
+            shutil.copyfileobj(f.file, buffer)
+        saved_files.append((f.filename, dest))
+
+    if not saved_files:
+        shutil.rmtree(tmp_in_str, ignore_errors=True)
+        shutil.rmtree(tmp_out_str, ignore_errors=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="None of the uploaded files have supported extensions (.pdf, .png, .jpg, .jpeg)",
+        )
+
+    return StreamingResponse(
+        _stream_uploaded_batch_generator(
+            tmp_in=tmp_in,
+            tmp_out=tmp_out,
+            lang=lang,
+            workers=workers,
+            use_cache=use_cache,
+            ocr_cache_dir=ocr_cache_dir,
+        ),
+        media_type="application/x-ndjson",
+    )
+
+
+@app.post(
     "/api/v1/invoices/batch-dir",
     summary="Batch Process Server Directory",
     tags=["Invoices"],
@@ -1028,6 +1348,19 @@ async def process_batch_directory(request: BatchDirRequest, background_tasks: Ba
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Input path is not a directory: {request.input_dir}",
+        )
+
+    if request.stream:
+        return StreamingResponse(
+            _stream_directory_batch_generator(
+                in_path=in_path,
+                out_path=Path(request.output_dir),
+                lang=request.lang,
+                workers=request.workers,
+                use_cache=request.use_cache,
+                ocr_cache_dir=request.ocr_cache_dir,
+            ),
+            media_type="application/x-ndjson",
         )
 
     if request.async_mode:
@@ -1071,6 +1404,38 @@ async def process_batch_directory(request: BatchDirRequest, background_tasks: Ba
 
 
 @app.post(
+    "/api/v1/invoices/batch-dir/stream",
+    summary="Stream Batch Process Server Directory (NDJSON)",
+    tags=["Invoices"],
+)
+async def process_batch_directory_stream(request: BatchDirRequest):
+    """Stream server-side directory batch processing yielding live intermediate NDJSON events."""
+    in_path = Path(request.input_dir)
+    if not in_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Input directory does not exist: {request.input_dir}",
+        )
+    if not in_path.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Input path is not a directory: {request.input_dir}",
+        )
+
+    return StreamingResponse(
+        _stream_directory_batch_generator(
+            in_path=in_path,
+            out_path=Path(request.output_dir),
+            lang=request.lang,
+            workers=request.workers,
+            use_cache=request.use_cache,
+            ocr_cache_dir=request.ocr_cache_dir,
+        ),
+        media_type="application/x-ndjson",
+    )
+
+
+@app.post(
     "/api/v1/invoices/validate",
     summary="Validate Invoice Data Model",
     tags=["Invoices"],
@@ -1087,11 +1452,14 @@ async def validate_invoice_endpoint(payload: dict[str, Any]):
     try:
         invoice = _dict_to_invoice(payload)
         val_res = validate_invoice(invoice, tokens=[])
-        return {
+        response_payload = {
             "is_valid": val_res.is_valid,
             "errors": [asdict(e) for e in val_res.errors],
             "warnings": [asdict(w) for w in val_res.warnings],
         }
+        if val_res.legal_compliance_report:
+            response_payload["legal_compliance_report"] = asdict(val_res.legal_compliance_report)
+        return response_payload
     except Exception as exc:
         logger.error("Error validating invoice payload: %s", exc, exc_info=True)
         raise HTTPException(
@@ -1641,6 +2009,251 @@ async def export_microinvest_delta_endpoint(request: MicroinvestExportRequest):
     return Response(content=xml_content, media_type="application/xml")
 
 
+@app.post(
+    "/api/v1/export/microinvest/delta-csv",
+    summary="Export to Microinvest Delta Pro Postings CSV",
+    tags=["Accounting", "Microinvest ERP"],
+)
+async def export_microinvest_delta_csv_endpoint(request: MicroinvestExportRequest):
+    """Export invoices to Microinvest Delta Pro double-entry postings CSV (CP1251)."""
+    from invoice_core.microinvest_export import generate_microinvest_delta_csv
+    if not request.invoices:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invoices list cannot be empty",
+        )
+    csv_bytes = generate_microinvest_delta_csv(
+        request.invoices,
+        default_expense_account=request.default_expense_account,
+        default_goods_account=request.default_goods_account,
+        default_vat_account=request.default_vat_account,
+        default_supplier_account=request.default_supplier_account,
+        encoding="windows-1251",
+    )
+    assert isinstance(csv_bytes, bytes)
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=Microinvest_Delta_Postings.csv"},
+    )
+
+
+@app.post(
+    "/api/v1/export/business-navigator/csv",
+    summary="Export to Business Navigator Delimited CSV",
+    tags=["Accounting", "Business Navigator"],
+)
+async def export_business_navigator_csv_endpoint(request: BusinessNavigatorExportRequest):
+    """Export invoices to Business Navigator delimited CSV format."""
+    from invoice_core.business_navigator_export import generate_business_navigator_csv
+    if not request.invoices:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invoices list cannot be empty")
+    csv_bytes = generate_business_navigator_csv(request.invoices, encoding=request.encoding)
+    content = csv_bytes if isinstance(csv_bytes, bytes) else csv_bytes.encode(request.encoding)
+    return Response(
+        content=content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=BN_IMPORT.csv"},
+    )
+
+
+@app.post(
+    "/api/v1/export/business-navigator/txt",
+    summary="Export to Business Navigator Section TXT",
+    tags=["Accounting", "Business Navigator"],
+)
+async def export_business_navigator_txt_endpoint(request: BusinessNavigatorExportRequest):
+    """Export invoices to Business Navigator section-based tagged TXT format."""
+    from invoice_core.business_navigator_export import generate_business_navigator_section_txt
+    if not request.invoices:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invoices list cannot be empty")
+    txt_bytes = generate_business_navigator_section_txt(request.invoices, encoding=request.encoding)
+    content = txt_bytes if isinstance(txt_bytes, bytes) else txt_bytes.encode(request.encoding)
+    return Response(
+        content=content,
+        media_type="text/plain",
+        headers={"Content-Disposition": "attachment; filename=BN_IMPORT.txt"},
+    )
+
+
+@app.post(
+    "/api/v1/export/business-navigator/dbf",
+    summary="Export to Business Navigator Single DBF",
+    tags=["Accounting", "Business Navigator"],
+)
+async def export_business_navigator_dbf_endpoint(request: BusinessNavigatorExportRequest):
+    """Export invoices to native binary dBase III / IV DBF file."""
+    from invoice_core.business_navigator_export import generate_business_navigator_single_dbf
+    if not request.invoices:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invoices list cannot be empty")
+    dbf_bytes = generate_business_navigator_single_dbf(request.invoices)
+    return Response(
+        content=dbf_bytes,
+        media_type="application/x-dbf",
+        headers={"Content-Disposition": "attachment; filename=BN_SINGLE.DBF"},
+    )
+
+
+@app.post(
+    "/api/v1/export/business-navigator/package",
+    summary="Export Complete Business Navigator Package (ZIP with DBF, CSV, TXT)",
+    tags=["Accounting", "Business Navigator"],
+)
+async def export_business_navigator_package_endpoint(request: BusinessNavigatorExportRequest):
+    """Export complete Business Navigator package with dual DBFs (DOKUM/OPER), CSV, TXT in a ZIP archive."""
+    from invoice_core.business_navigator_export import export_business_navigator_package
+    if not request.invoices:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invoices list cannot be empty")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        res = export_business_navigator_package(request.invoices, output_dir=tmp_dir, create_zip=True)
+        zip_path = res["bn_zip"]
+        zip_bytes = Path(zip_path).read_bytes()
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=Business_Navigator_Package.zip"},
+    )
+
+
+@app.post(
+    "/api/v1/export/ajur",
+    summary="Export to Ajur (Ажур-L / Ажур 7) CSV",
+    tags=["Accounting", "Ajur ERP"],
+)
+async def export_ajur_endpoint(request: AjurExportRequest):
+    """Export invoices to Ajur 7 / L import CSV format (CP1251)."""
+    from invoice_core.ajur_export import generate_ajur_csv
+    if not request.invoices:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invoices list cannot be empty")
+    csv_bytes = generate_ajur_csv(request.invoices, encoding=request.encoding)
+    content = csv_bytes if isinstance(csv_bytes, bytes) else csv_bytes.encode(request.encoding)
+    return Response(
+        content=content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=AJUR_IMPORT.csv"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Official Bulgarian Chart of Accounts & Tax Period Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/api/v1/accounting/chart-of-accounts",
+    summary="Query Official Bulgarian Chart of Accounts (НСС / Национален сметкоплан)",
+    tags=["Accounting", "Chart of Accounts"],
+)
+async def get_chart_of_accounts_endpoint(
+    q: Optional[str] = Query(default=None, description="Search query by code, name, keywords, or purpose"),
+    account_class: Optional[int] = Query(default=None, ge=1, le=9, description="Filter by account class (1-9)"),
+    limit: int = Query(default=50, ge=1, le=200, description="Max results to return"),
+):
+    """List or search accounts in the official Bulgarian National Chart of Accounts."""
+    from invoice_core.chart_of_accounts import DEFAULT_CHART_OF_ACCOUNTS
+    if q:
+        results = DEFAULT_CHART_OF_ACCOUNTS.search(q, limit=limit)
+    elif account_class:
+        results = DEFAULT_CHART_OF_ACCOUNTS.get_by_class(account_class)[:limit]
+    else:
+        results = DEFAULT_CHART_OF_ACCOUNTS.all_accounts()[:limit]
+
+    return {
+        "count": len(results),
+        "accounts": [a.to_dict() for a in results],
+    }
+
+
+@app.get(
+    "/api/v1/accounting/chart-of-accounts/{code}",
+    summary="Get Account Details and Purpose by Code",
+    tags=["Accounting", "Chart of Accounts"],
+)
+async def get_account_detail_endpoint(code: str):
+    """Get full details, legal purpose, and typical debit/credit conventions for an account."""
+    from invoice_core.chart_of_accounts import DEFAULT_CHART_OF_ACCOUNTS
+    acc = DEFAULT_CHART_OF_ACCOUNTS.get(code)
+    if not acc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Account '{code}' not found in the Bulgarian Chart of Accounts",
+        )
+    return {
+        "account": acc.to_dict(),
+        "explanation": DEFAULT_CHART_OF_ACCOUNTS.explain(code),
+        "subaccounts": [s.to_dict() for s in DEFAULT_CHART_OF_ACCOUNTS.get_subaccounts(code)],
+    }
+
+
+@app.post(
+    "/api/v1/accounting/validate-tax-period",
+    summary="Validate Tax Period Compliance under Art. 124 VAT Act (чл. 124 ЗДДС)",
+    tags=["Accounting", "Tax Period Validation"],
+)
+async def validate_tax_period_endpoint(request: TaxPeriodValidationApiRequest):
+    """Check if document dates/tax events match the declared VAT period and statutory 12-month rule."""
+    from invoice_core.tax_period_validator import TaxPeriodValidator
+    if not request.invoices:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invoices list cannot be empty")
+    batch_res = TaxPeriodValidator.validate_batch(request.invoices, target_period=request.target_period)
+    return batch_res
+
+
+@app.get(
+    "/api/v1/accounting/mapping-rules",
+    summary="Get Active Account Mapping Engine Rules",
+    tags=["Accounting", "Account Mapping"],
+)
+async def get_mapping_rules_endpoint():
+    """Retrieve active supplier and keyword account mapping rules."""
+    from invoice_core.account_mapping import DEFAULT_MAPPING_ENGINE
+    return DEFAULT_MAPPING_ENGINE.to_dict()
+
+
+@app.post(
+    "/api/v1/accounting/mapping-rules/supplier",
+    summary="Add or Update Supplier Account Mapping Rule",
+    tags=["Accounting", "Account Mapping"],
+)
+async def add_supplier_mapping_rule_endpoint(request: SupplierMappingRuleApiRequest):
+    """Register custom account mapping for a specific supplier EIK."""
+    from invoice_core.account_mapping import DEFAULT_MAPPING_ENGINE
+    DEFAULT_MAPPING_ENGINE.add_supplier_rule(
+        eik=request.eik,
+        account=request.target_account,
+        subledger=request.target_subledger,
+        supplier_name=request.supplier_name or "",
+        description=request.description or "",
+    )
+    return {
+        "status": "success",
+        "message": f"Supplier rule registered for EIK {request.eik} -> Account {request.target_account}",
+    }
+
+
+@app.post(
+    "/api/v1/accounting/mapping-rules/keyword",
+    summary="Add or Update Keyword/Regex Account Mapping Rule",
+    tags=["Accounting", "Account Mapping"],
+)
+async def add_keyword_mapping_rule_endpoint(request: KeywordMappingRuleApiRequest):
+    """Register custom keyword or regex mapping rule for line item descriptions."""
+    from invoice_core.account_mapping import DEFAULT_MAPPING_ENGINE
+    DEFAULT_MAPPING_ENGINE.add_keyword_rule(
+        rule_id=request.rule_id,
+        account=request.target_account,
+        keywords=request.keywords,
+        regex_pattern=request.regex_pattern,
+        subledger=request.target_subledger,
+        priority=request.priority,
+        description=request.description or "",
+    )
+    return {
+        "status": "success",
+        "message": f"Keyword rule '{request.rule_id}' registered -> Account {request.target_account}",
+    }
+
+
+
 # ---------------------------------------------------------------------------
 # Document & HITL Human-in-the-Loop Endpoints (Pillar 4, M14)
 # ---------------------------------------------------------------------------
@@ -1836,6 +2449,125 @@ async def approve_document(
     }
 
 
+@app.post(
+    "/api/v1/documents/{document_id}/approve-and-export",
+    tags=["Documents"],
+    summary="Approve Document, Save Corrections, Trigger Webhook & Export (HITL DoD)",
+)
+async def approve_and_export_document(
+    document_id: str,
+    request: ApproveAndExportRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Atomic approval and export workflow for HITL accountants:
+    1. Apply manual field corrections (if provided) and log diffs.
+    2. Re-validate document with statutory rules.
+    3. Mark document as approved in database.py.
+    4. Queue outbound ERP webhook with balanced double-entry accounting entries.
+    5. Generate statutory НАП POKUPKI and double-entry journal entries exports.
+    6. Record approval and export events in immutable audit trail.
+    """
+    # 1. Apply manual corrections if provided
+    if request.corrections:
+        update_document_corrections(
+            db=db,
+            doc_id=document_id,
+            corrections=request.corrections,
+            actor=request.actor,
+        )
+
+    # 2. Mark document approved in database
+    record = approve_document_in_db(
+        db=db,
+        doc_id=document_id,
+        actor=request.actor,
+        webhook_url=request.webhook_url,
+    )
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document '{document_id}' not found",
+        )
+
+    doc_dict = record.to_dict()
+
+    # 3. Dispatch ERP Webhook
+    target_webhook = request.webhook_url or record.webhook_url
+    webhook_queued = False
+    if target_webhook:
+        payload = prepare_webhook_payload(doc_dict, event_type="invoice.approved")
+        background_tasks.add_task(
+            send_webhook_async,
+            target_url=target_webhook,
+            payload=payload,
+            document_id=document_id,
+        )
+        webhook_queued = True
+
+    # 4. Generate accounting exports
+    from accounting_export import (
+        export_journal_entries_csv,
+        export_journal_entries_json,
+        invoices_to_journal_entries,
+        invoices_to_pokupki_txt,
+    )
+
+    exports: dict[str, Any] = {}
+    try:
+        pokupki_raw = invoices_to_pokupki_txt([doc_dict], format="fixed_width", encoding="utf-8")
+        pokupki_str = pokupki_raw if isinstance(pokupki_raw, str) else pokupki_raw.decode("utf-8", errors="replace")
+        exports["pokupki"] = {
+            "filename": f"POKUPKI_{document_id[:8]}.TXT",
+            "content": pokupki_str,
+        }
+    except Exception as exc:
+        logger.warning("Error generating POKUPKI in approve-and-export for %s: %s", document_id, exc)
+
+    try:
+        entries = invoices_to_journal_entries([doc_dict])
+        csv_text = export_journal_entries_csv(entries, format_type="universal")
+        json_text = export_journal_entries_json(entries)
+        exports["journal_entries_csv"] = {
+            "filename": f"journal_entries_{document_id[:8]}.csv",
+            "content": csv_text,
+        }
+        exports["journal_entries_json"] = json.loads(json_text)
+    except Exception as exc:
+        logger.warning("Error generating journal entries in approve-and-export for %s: %s", document_id, exc)
+
+    # 5. Record export in audit trail
+    add_audit_entry(
+        db=db,
+        document_id=document_id,
+        action="exported",
+        actor=request.actor,
+        details={
+            "export_types": list(exports.keys()),
+            "webhook_dispatched": webhook_queued,
+        },
+    )
+
+    # 6. Retrieve refreshed audit trail
+    audits = (
+        db.query(AuditTrailRecord)
+        .filter(AuditTrailRecord.document_id == document_id)
+        .order_by(AuditTrailRecord.timestamp.asc())
+        .all()
+    )
+
+    return {
+        "status": "approved",
+        "document_id": document_id,
+        "message": "Document approved, corrections logged, webhook queued, and accounting export generated.",
+        "webhook_url": target_webhook,
+        "webhook_queued": webhook_queued,
+        "document": record.to_dict(),
+        "exports": exports,
+        "audit_trail": [a.to_dict() for a in audits],
+    }
+
+
 @app.get(
     "/api/v1/documents/{document_id}/audit-trail",
     tags=["Documents"],
@@ -1874,6 +2606,13 @@ async def export_single_pokupki(
         format=format,  # type: ignore
         encoding=encoding,
     )
+    add_audit_entry(
+        db=db,
+        document_id=document_id,
+        action="exported",
+        actor="accountant",
+        details={"type": "pokupki", "format": format, "encoding": encoding},
+    )
     media_type = "text/plain; charset=windows-1251" if encoding == "cp1251" else "text/plain; charset=utf-8"
     content_bytes = raw_output if isinstance(raw_output, bytes) else raw_output.encode(encoding)
     return Response(
@@ -1904,6 +2643,13 @@ async def export_single_journal_entries(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     entries = invoices_to_journal_entries([record.to_dict()])
+    add_audit_entry(
+        db=db,
+        document_id=document_id,
+        action="exported",
+        actor="accountant",
+        details={"type": "journal_entries", "format": format},
+    )
     if format == "json":
         payload_str = export_journal_entries_json(entries)
         return JSONResponse(content=json.loads(payload_str))
@@ -2350,6 +3096,77 @@ async def search_business_local(
             })
 
     return {"success": True, "results": results}
+
+
+# ===========================================================================
+# Vendor Profile Management Endpoints (External YAML Dynamic Reload)
+# ===========================================================================
+
+@app.get(
+    "/api/v1/vendors",
+    tags=["Vendor Profiles"],
+    summary="List all loaded vendor profiles and configuration status",
+)
+async def list_vendor_profiles_endpoint():
+    """Retrieve all active vendor profiles loaded from YAML configuration files."""
+    from invoice_core.vendor_profiles import get_vendor_profile_loader
+
+    loader = get_vendor_profile_loader()
+    profiles = loader.get_profiles()
+    diag = loader.get_diagnostics()
+
+    vendors = [p.to_dict() for p in profiles.values()]
+    return {
+        "success": True,
+        "total": len(vendors),
+        "vendors": vendors,
+        "last_reloaded": diag.get("last_reloaded"),
+        "errors": diag.get("errors", []),
+        "config_dirs": diag.get("config_dirs", []),
+    }
+
+
+@app.get(
+    "/api/v1/vendors/{vendor_id}",
+    tags=["Vendor Profiles"],
+    summary="Get details of a specific vendor profile",
+)
+async def get_vendor_profile_endpoint(vendor_id: str):
+    """Retrieve details for a specific vendor profile by ID, EIK, or keyword."""
+    from invoice_core.vendor_profiles import get_vendor_profile_loader
+
+    loader = get_vendor_profile_loader()
+    prof = loader.get_profile(vendor_id)
+    if not prof:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vendor profile '{vendor_id}' not found",
+        )
+    return {
+        "success": True,
+        "vendor": prof.to_dict(),
+    }
+
+
+@app.post(
+    "/api/v1/vendors/reload",
+    tags=["Vendor Profiles"],
+    summary="Dynamic hot-reload of vendor profiles from YAML files without server restart",
+)
+async def reload_vendor_profiles_endpoint():
+    """Hot-reload vendor profiles from YAML files on disk without stopping the service."""
+    from invoice_core.vendor_profiles import get_vendor_profile_loader
+
+    loader = get_vendor_profile_loader()
+    result = loader.reload()
+    return {
+        "success": True,
+        "message": f"Successfully reloaded {result['loaded_count']} vendor profiles",
+        "reloaded_count": result["loaded_count"],
+        "vendors": result["profiles"],
+        "errors": result.get("errors", []),
+        "timestamp": result["reloaded_at"],
+    }
 
 
 @app.post(

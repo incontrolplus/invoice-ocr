@@ -1,0 +1,31 @@
+# Shell Bulgaria EAD Profile
+id: shell
+name: "ШЕЛ БЪЛГАРИЯ ЕАД"
+eik: "831299905"
+vat: "BG831299905"
+address: "гр. София 1784, бул. Цариградско шосе 73"
+invoice_number_series:
+  prefix: "0"
+  length: 10
+keywords:
+  - "shell"
+  - "шел"
+  - "шел българия"
+table_anchors:
+  - "описание"
+  - "артикул"
+  - "количество"
+  - "цена"
+  - "сума"
+column_offsets:
+  description: [0.05, 0.50]
+  quantity: [0.50, 0.65]
+  unit_price: [0.65, 0.80]
+  total: [0.80, 0.95]
+fused_patterns:
+  - "831299905"
+dot_matrix: false
+banking:
+  - iban: "BG39UNCR70001500876294"
+    bic: "UNCRBGSF"
+    bank_name: "УниКредит Булбанк АД"

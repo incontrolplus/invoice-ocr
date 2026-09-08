@@ -9,11 +9,15 @@
       --primary: #2563eb;
       --primary-hover: #1d4ed8;
       --success: #16a34a;
+      --success-light: #f0fdf4;
       --warning: #ca8a04;
+      --warning-light: #fefce8;
       --danger: #dc2626;
-      --bg: #f8fafc;
+      --danger-light: #fef2f2;
+      --bg: #f1f5f9;
       --surface: #ffffff;
-      --border: #e2e8f0;
+      --border: #cbd5e1;
+      --border-subtle: #e2e8f0;
       --text: #0f172a;
       --text-muted: #64748b;
     }
@@ -27,88 +31,133 @@
       height: 100vh;
       overflow: hidden;
     }
-    /* Header */
+
+    /* Top Header */
     header {
       background: var(--surface);
       border-bottom: 1px solid var(--border);
-      padding: 0.75rem 1.5rem;
+      padding: 0.6rem 1.25rem;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      z-index: 10;
+      z-index: 20;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
     .brand {
       display: flex;
       align-items: center;
-      gap: 0.75rem;
+      gap: 0.6rem;
       font-weight: 700;
-      font-size: 1.15rem;
+      font-size: 1.1rem;
       color: var(--text);
     }
-    .brand span.flag { font-size: 1.4rem; }
+    .brand span.flag { font-size: 1.35rem; }
     .badge-sub {
       background: #eff6ff;
       color: var(--primary);
-      font-size: 0.75rem;
-      padding: 0.2rem 0.5rem;
+      font-size: 0.72rem;
+      padding: 0.2rem 0.55rem;
       border-radius: 9999px;
       font-weight: 600;
+      border: 1px solid #bfdbfe;
     }
-    .header-actions { display: flex; align-items: center; gap: 0.75rem; }
+    .header-actions { display: flex; align-items: center; gap: 0.6rem; }
+    .search-box {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+    .search-box input {
+      font-family: inherit;
+      font-size: 0.8rem;
+      padding: 0.38rem 0.6rem 0.38rem 1.8rem;
+      border: 1px solid var(--border);
+      border-radius: 0.375rem;
+      width: 180px;
+      transition: width 0.2s, border-color 0.2s;
+    }
+    .search-box input:focus {
+      width: 230px;
+      outline: none;
+      border-color: var(--primary);
+    }
+    .search-box span.search-icon {
+      position: absolute;
+      left: 0.55rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      pointer-events: none;
+    }
+
     button.btn {
       font-family: inherit;
-      font-size: 0.875rem;
-      font-weight: 500;
-      padding: 0.45rem 0.9rem;
+      font-size: 0.83rem;
+      font-weight: 600;
+      padding: 0.42rem 0.85rem;
       border-radius: 0.375rem;
       cursor: pointer;
       border: 1px solid transparent;
       display: inline-flex;
       align-items: center;
-      gap: 0.4rem;
+      gap: 0.35rem;
       transition: all 0.15s ease-in-out;
+      white-space: nowrap;
     }
     .btn-primary { background: var(--primary); color: #fff; }
     .btn-primary:hover { background: var(--primary-hover); }
     .btn-success { background: var(--success); color: #fff; }
     .btn-success:hover { background: #15803d; }
     .btn-secondary { background: var(--surface); border-color: var(--border); color: var(--text); }
-    .btn-secondary:hover { background: #f1f5f9; }
+    .btn-secondary:hover { background: #f8fafc; border-color: #94a3b8; }
     .btn-danger { background: var(--danger); color: #fff; }
-    .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.75rem; }
+    .btn-sm { padding: 0.22rem 0.5rem; font-size: 0.75rem; }
 
-    /* Main Layout */
+    /* Workspace Layout */
     .workspace {
       display: flex;
       flex: 1;
-      height: calc(100vh - 60px);
+      height: calc(100vh - 55px);
       overflow: hidden;
     }
 
     /* Left Panel: Document Viewer */
     .left-panel {
-      flex: 1;
+      flex: 1.1;
       display: flex;
       flex-direction: column;
-      border-right: 1px solid var(--border);
-      background: #475569;
+      border-right: 2px solid var(--border);
+      background: #334155;
       position: relative;
+      overflow: hidden;
     }
     .viewer-toolbar {
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-      padding: 0.5rem 1rem;
+      background: #1e293b;
+      color: #f8fafc;
+      border-bottom: 1px solid #475569;
+      padding: 0.45rem 0.85rem;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 1rem;
-      font-size: 0.85rem;
-      z-index: 5;
+      gap: 0.75rem;
+      font-size: 0.8rem;
+      z-index: 10;
+      flex-wrap: wrap;
     }
-    .viewer-toolbar .tool-group { display: flex; align-items: center; gap: 0.5rem; }
-    .legend { display: flex; align-items: center; gap: 0.75rem; font-size: 0.75rem; }
-    .legend-item { display: flex; align-items: center; gap: 0.3rem; }
-    .dot { width: 10px; height: 10px; border-radius: 2px; }
+    .viewer-toolbar .tool-group { display: flex; align-items: center; gap: 0.35rem; }
+    .btn-tool {
+      background: #334155;
+      border: 1px solid #475569;
+      color: #f1f5f9;
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.25rem;
+      cursor: pointer;
+      font-size: 0.78rem;
+      font-weight: 500;
+    }
+    .btn-tool:hover { background: #475569; color: #fff; }
+    .legend { display: flex; align-items: center; gap: 0.6rem; font-size: 0.72rem; }
+    .legend-item { display: flex; align-items: center; gap: 0.25rem; }
+    .dot { width: 9px; height: 9px; border-radius: 2px; }
     .dot-green { background: #22c55e; }
     .dot-yellow { background: #eab308; }
     .dot-red { background: #ef4444; }
@@ -119,18 +168,21 @@
       display: flex;
       justify-content: center;
       align-items: flex-start;
-      padding: 1.5rem;
+      padding: 1rem;
       position: relative;
+      cursor: default;
     }
     .canvas-wrapper {
       position: relative;
-      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.45);
       background: #fff;
       display: inline-block;
+      transition: transform 0.1s ease-out;
+      transform-origin: top center;
     }
     #doc-image {
       display: block;
-      max-width: 100%;
+      max-width: none;
       height: auto;
       pointer-events: none;
     }
@@ -147,14 +199,63 @@
       background: rgba(15, 23, 42, 0.95);
       color: #fff;
       padding: 0.35rem 0.65rem;
-      border-radius: 0.25rem;
-      font-size: 0.75rem;
+      border-radius: 0.3rem;
+      font-size: 0.74rem;
       pointer-events: none;
-      z-index: 20;
+      z-index: 25;
       display: none;
       white-space: nowrap;
-      box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+      box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+      border: 1px solid #475569;
     }
+
+    /* Floating Quick Assign Popover on Canvas */
+    .box-popover {
+      position: absolute;
+      background: #ffffff;
+      color: var(--text);
+      border-radius: 0.45rem;
+      padding: 0.65rem;
+      box-shadow: 0 10px 25px -3px rgba(0,0,0,0.25), 0 4px 6px -2px rgba(0,0,0,0.1);
+      border: 1px solid var(--border);
+      z-index: 30;
+      display: none;
+      min-width: 230px;
+    }
+    .box-popover.active { display: block; }
+    .popover-header {
+      font-size: 0.75rem;
+      font-weight: 700;
+      margin-bottom: 0.45rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: 0.3rem;
+    }
+    .popover-token-val {
+      color: var(--primary);
+      font-weight: 800;
+      word-break: break-all;
+    }
+    .popover-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.3rem;
+    }
+    .pop-btn {
+      font-family: inherit;
+      font-size: 0.72rem;
+      font-weight: 500;
+      padding: 0.28rem 0.45rem;
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 0.25rem;
+      cursor: pointer;
+      text-align: left;
+      transition: all 0.1s;
+    }
+    .pop-btn:hover { background: #eff6ff; border-color: var(--primary); color: var(--primary); }
 
     /* Right Panel: HITL Editor */
     .right-panel {
@@ -163,9 +264,10 @@
       display: flex;
       flex-direction: column;
       overflow-y: auto;
+      border-left: 1px solid var(--border);
     }
     .editor-header {
-      padding: 1rem 1.5rem;
+      padding: 0.75rem 1.25rem;
       border-bottom: 1px solid var(--border);
       display: flex;
       justify-content: space-between;
@@ -173,91 +275,151 @@
       background: #fff;
       position: sticky;
       top: 0;
-      z-index: 8;
+      z-index: 12;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.03);
     }
-    .doc-info h2 { font-size: 1.1rem; font-weight: 700; }
-    .doc-info p { font-size: 0.8rem; color: var(--text-muted); }
+    .doc-info h2 { font-size: 1.05rem; font-weight: 700; color: var(--text); }
+    .doc-info p { font-size: 0.76rem; color: var(--text-muted); margin-top: 0.15rem; }
     .status-pill {
-      font-size: 0.75rem;
-      font-weight: 600;
-      padding: 0.25rem 0.65rem;
+      font-size: 0.72rem;
+      font-weight: 700;
+      padding: 0.22rem 0.65rem;
       border-radius: 9999px;
       text-transform: uppercase;
+      letter-spacing: 0.04em;
     }
-    .status-completed { background: #dcfce7; color: #166534; }
-    .status-needs_review { background: #fef9c3; color: #854d0e; }
-    .status-approved { background: #bbf7d0; color: #14532d; }
-    .status-failed { background: #fee2e2; color: #991b1b; }
+    .status-completed { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+    .status-needs_review { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+    .status-approved { background: #bbf7d0; color: #14532d; border: 1px solid #4ade80; }
+    .status-exported { background: #e0e7ff; color: #3730a3; border: 1px solid #a5b4fc; }
+    .status-failed { background: #fee2e2; color: #991b1b; border: 1px solid #f87171; }
 
-    /* Validation Banner */
+    /* Top Validation Banner */
     .validation-banner {
-      margin: 1rem 1.5rem 0;
+      margin: 0.75rem 1.25rem 0;
       padding: 0.75rem 1rem;
-      border-radius: 0.375rem;
-      font-size: 0.85rem;
-      line-height: 1.4;
+      border-radius: 0.4rem;
+      font-size: 0.82rem;
+      line-height: 1.45;
+      transition: all 0.2s;
     }
-    .banner-success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
-    .banner-warning { background: #fefce8; border: 1px solid #fef08a; color: #854d0e; }
-    .banner-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+    .banner-success {
+      background: var(--success-light);
+      border: 1.5px solid #86efac;
+      color: #166534;
+    }
+    .banner-error {
+      background: var(--danger-light);
+      border: 2px solid #ef4444;
+      color: #991b1b;
+      box-shadow: 0 2px 4px rgba(220, 38, 38, 0.08);
+    }
+    .banner-warning {
+      background: var(--warning-light);
+      border: 1.5px solid #fde047;
+      color: #854d0e;
+    }
 
-    /* Live Balance Bar */
+    /* Live Balance Bar (чл. 26 ЗДДС & Double-entry) */
     .balance-card {
-      margin: 1rem 1.5rem 0;
-      background: #f8fafc;
-      border: 1px solid var(--border);
-      border-radius: 0.5rem;
+      margin: 0.75rem 1.25rem 0;
+      border-radius: 0.45rem;
       padding: 0.75rem 1rem;
+      transition: all 0.2s ease-in-out;
+    }
+    .card-success {
+      background: #f0fdf4;
+      border: 1.5px solid #86efac;
+    }
+    .card-danger {
+      background: #fef2f2;
+      border: 2px solid #ef4444;
+      box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12);
     }
     .balance-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-size: 0.85rem;
+      font-size: 0.83rem;
       font-weight: 700;
-      margin-bottom: 0.5rem;
+      margin-bottom: 0.45rem;
     }
     .balance-grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 0.75rem;
-      font-size: 0.8rem;
+      gap: 0.6rem;
+      font-size: 0.78rem;
     }
     .balance-col {
       background: #fff;
-      padding: 0.5rem;
-      border-radius: 0.25rem;
+      padding: 0.45rem 0.6rem;
+      border-radius: 0.3rem;
       border: 1px solid var(--border);
     }
-    .balance-col .label { color: var(--text-muted); font-size: 0.7rem; }
-    .balance-col .val { font-size: 0.95rem; font-weight: 700; margin-top: 0.2rem; }
+    .balance-col .label { color: var(--text-muted); font-size: 0.68rem; font-weight: 600; }
+    .balance-col .val { font-size: 0.92rem; font-weight: 700; margin-top: 0.15rem; }
     .journal-entry {
       margin-top: 0.5rem;
-      font-size: 0.75rem;
+      font-size: 0.73rem;
       background: #fff;
-      padding: 0.4rem 0.6rem;
+      padding: 0.4rem 0.65rem;
       border-radius: 0.25rem;
       border-left: 3px solid var(--primary);
       display: flex;
       justify-content: space-between;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .balance-auto-btn {
+      font-size: 0.72rem;
+      padding: 0.18rem 0.45rem;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      color: var(--primary);
+      border-radius: 0.25rem;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .balance-auto-btn:hover { background: #dbeafe; }
+
+    /* Active Field Target Bar */
+    .active-target-bar {
+      margin: 0.65rem 1.25rem 0;
+      padding: 0.4rem 0.75rem;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 0.35rem;
+      font-size: 0.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+    .active-target-bar select {
+      font-family: inherit;
+      font-size: 0.75rem;
+      padding: 0.2rem 0.45rem;
+      border: 1px solid var(--border);
+      border-radius: 0.25rem;
+      background: #fff;
     }
 
     /* Form Content */
     .editor-content {
-      padding: 1rem 1.5rem 2rem;
+      padding: 0.85rem 1.25rem 2rem;
       display: flex;
       flex-direction: column;
-      gap: 1.25rem;
+      gap: 1.1rem;
     }
     .section-title {
-      font-size: 0.9rem;
+      font-size: 0.85rem;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.03em;
       color: var(--text-muted);
       border-bottom: 1px solid var(--border);
-      padding-bottom: 0.35rem;
-      margin-bottom: 0.75rem;
+      padding-bottom: 0.3rem;
+      margin-bottom: 0.65rem;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -265,68 +427,100 @@
     .form-grid {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
-      gap: 0.75rem;
+      gap: 0.65rem;
     }
-    .form-group { display: flex; flex-direction: column; gap: 0.25rem; }
+    .form-group { display: flex; flex-direction: column; gap: 0.2rem; }
     .form-group.full-width { grid-column: span 2; }
     .form-group label {
-      font-size: 0.75rem;
+      font-size: 0.73rem;
       font-weight: 600;
       color: var(--text-muted);
       display: flex;
       justify-content: space-between;
+      align-items: center;
     }
     .form-group input, .form-group select {
       font-family: inherit;
-      font-size: 0.85rem;
-      padding: 0.4rem 0.6rem;
+      font-size: 0.83rem;
+      padding: 0.38rem 0.55rem;
       border: 1px solid var(--border);
-      border-radius: 0.25rem;
+      border-radius: 0.3rem;
       color: var(--text);
-      transition: border-color 0.15s;
+      transition: all 0.15s;
+      background: #fff;
     }
     .form-group input:focus, .form-group select:focus {
       outline: none;
       border-color: var(--primary);
-      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
     }
-    .eik-badge { font-size: 0.7rem; font-weight: 600; }
-    .eik-valid { color: var(--success); }
-    .eik-invalid { color: var(--danger); }
+
+    /* Red Validation Error Styles */
+    .input-error {
+      border: 2px solid #ef4444 !important;
+      background: #fef2f2 !important;
+      box-shadow: 0 0 0 1px #ef4444 !important;
+    }
+    .input-valid {
+      border: 1.5px solid #16a34a !important;
+    }
+    .error-inline-msg {
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--danger);
+      margin-top: 0.15rem;
+      display: none;
+    }
+    .error-inline-msg.active { display: block; }
+
+    .eik-badge { font-size: 0.72rem; font-weight: 700; padding: 0.1rem 0.35rem; border-radius: 0.2rem; }
+    .eik-valid { color: var(--success); background: #dcfce7; }
+    .eik-invalid { color: var(--danger); background: #fee2e2; }
+
+    /* Flash highlight animation for click-filled fields */
+    .flash-highlight {
+      animation: fieldFlash 0.75s ease-out;
+    }
+    @keyframes fieldFlash {
+      0% { background-color: #fef08a; transform: scale(1.02); }
+      100% { background-color: inherit; transform: scale(1); }
+    }
 
     /* Line Items Table */
     .table-container {
       overflow-x: auto;
       border: 1px solid var(--border);
-      border-radius: 0.375rem;
+      border-radius: 0.35rem;
+      background: #fff;
     }
     table.items-table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 0.8rem;
+      font-size: 0.78rem;
     }
     table.items-table th {
       background: #f8fafc;
-      padding: 0.45rem 0.5rem;
+      padding: 0.4rem 0.45rem;
       text-align: left;
       font-weight: 600;
       color: var(--text-muted);
       border-bottom: 1px solid var(--border);
     }
     table.items-table td {
-      padding: 0.35rem 0.5rem;
-      border-bottom: 1px solid var(--border);
+      padding: 0.3rem 0.45rem;
+      border-bottom: 1px solid var(--border-subtle);
     }
     table.items-table input {
       width: 100%;
-      font-size: 0.8rem;
-      padding: 0.25rem 0.4rem;
+      font-size: 0.78rem;
+      padding: 0.22rem 0.35rem;
       border: 1px solid transparent;
       border-radius: 0.2rem;
     }
     table.items-table input:focus {
       border-color: var(--primary);
       background: #fff;
+      outline: none;
     }
 
     /* Sticky Footer */
@@ -335,40 +529,44 @@
       bottom: 0;
       background: #fff;
       border-top: 1px solid var(--border);
-      padding: 0.75rem 1.5rem;
+      padding: 0.65rem 1.25rem;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      box-shadow: 0 -4px 6px -1px rgba(0, 0, 0, 0.05);
-      z-index: 8;
+      box-shadow: 0 -3px 6px -1px rgba(0, 0, 0, 0.05);
+      z-index: 12;
+      flex-wrap: wrap;
+      gap: 0.5rem;
     }
-    .footer-actions { display: flex; gap: 0.5rem; }
+    .footer-actions { display: flex; gap: 0.45rem; align-items: center; }
 
     /* Audit Trail Drawer */
     .audit-section {
       background: #f8fafc;
       border: 1px solid var(--border);
-      border-radius: 0.375rem;
-      padding: 0.75rem;
+      border-radius: 0.35rem;
+      padding: 0.65rem;
     }
     .audit-timeline {
       display: flex;
       flex-direction: column;
-      gap: 0.5rem;
-      margin-top: 0.5rem;
-      max-height: 150px;
+      gap: 0.4rem;
+      margin-top: 0.4rem;
+      max-height: 140px;
       overflow-y: auto;
     }
     .timeline-item {
-      font-size: 0.75rem;
+      font-size: 0.72rem;
       display: flex;
-      gap: 0.5rem;
+      gap: 0.45rem;
       align-items: baseline;
-      border-bottom: 1px dashed var(--border);
-      padding-bottom: 0.3rem;
+      border-bottom: 1px dashed var(--border-subtle);
+      padding-bottom: 0.25rem;
     }
-    .timeline-time { color: var(--text-muted); min-width: 110px; font-variant-numeric: tabular-nums; }
+    .timeline-time { color: var(--text-muted); min-width: 95px; font-variant-numeric: tabular-nums; }
     .timeline-actor { font-weight: 600; color: var(--primary); }
+    .timeline-action { color: var(--text); }
+    .timeline-diff { color: #854d0e; font-family: monospace; font-size: 0.68rem; }
 
     /* Modal */
     .modal-backdrop {
@@ -378,7 +576,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      z-index: 50;
+      z-index: 60;
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.2s;
@@ -387,38 +585,41 @@
     .modal {
       background: #fff;
       border-radius: 0.5rem;
-      width: 480px;
+      width: 500px;
       max-width: 90vw;
-      padding: 1.5rem;
-      box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);
+      padding: 1.25rem;
+      box-shadow: 0 20px 25px -5px rgba(0,0,0,0.15);
     }
-    .modal h3 { margin-bottom: 1rem; font-size: 1.1rem; }
+    .modal h3 { margin-bottom: 0.85rem; font-size: 1.05rem; }
     .dropzone {
       border: 2px dashed var(--border);
-      border-radius: 0.5rem;
-      padding: 2rem;
+      border-radius: 0.45rem;
+      padding: 1.75rem;
       text-align: center;
       cursor: pointer;
-      margin-bottom: 1rem;
-      transition: border-color 0.2s;
+      margin-bottom: 0.85rem;
+      transition: border-color 0.2s, background 0.2s;
     }
-    .dropzone:hover { border-color: var(--primary); }
+    .dropzone:hover { border-color: var(--primary); background: #eff6ff; }
 
     /* Toast */
     #toast {
       position: fixed;
-      bottom: 2rem;
-      right: 2rem;
+      bottom: 1.5rem;
+      right: 1.5rem;
       background: #0f172a;
       color: #fff;
-      padding: 0.75rem 1.25rem;
-      border-radius: 0.375rem;
-      font-size: 0.85rem;
-      box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);
-      transform: translateY(100px);
+      padding: 0.65rem 1.15rem;
+      border-radius: 0.35rem;
+      font-size: 0.82rem;
+      box-shadow: 0 10px 15px -3px rgba(0,0,0,0.2);
+      transform: translateY(80px);
       opacity: 0;
-      transition: all 0.3s;
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
       z-index: 100;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
     }
     #toast.show { transform: translateY(0); opacity: 1; }
   </style>
@@ -433,7 +634,11 @@
       <span class="badge-sub">Стълб 4: Верификация & ERP</span>
     </div>
     <div class="header-actions">
-      <select id="doc-selector" class="btn btn-secondary" style="min-width: 220px;" onchange="loadSelectedDocument(this.value)">
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="search-docs" placeholder="Търсене..." oninput="filterDocumentsDropdown(this.value)">
+      </div>
+      <select id="doc-selector" class="btn btn-secondary" style="min-width: 230px;" onchange="loadSelectedDocument(this.value)">
         <option value="">Зареждане на документи...</option>
       </select>
       <button class="btn btn-secondary" onclick="openUploadModal()">📤 Качи фактура</button>
@@ -443,20 +648,30 @@
 
   <!-- Workspace -->
   <div class="workspace">
-    <!-- Left: Canvas Document Viewer -->
+    <!-- Left: Canvas Document Viewer with Zoom & Pan -->
     <div class="left-panel">
       <div class="viewer-toolbar">
         <div class="tool-group">
-          <button class="btn btn-secondary btn-sm" onclick="changePage(-1)">◀ Пред.</button>
-          <span id="page-indicator" style="font-weight: 600;">Стр. 1 от 1</span>
-          <button class="btn btn-secondary btn-sm" onclick="changePage(1)">Следв. ▶</button>
+          <button class="btn-tool" onclick="changePage(-1)" title="Предишна страница">◀ Пред.</button>
+          <span id="page-indicator" style="font-weight: 600; min-width: 80px; text-align: center;">Стр. 1 от 1</span>
+          <button class="btn-tool" onclick="changePage(1)" title="Следваща страница">Следв. ▶</button>
         </div>
+        
+        <div class="tool-group">
+          <button class="btn-tool" onclick="zoomChange(-0.15)" title="Намали">🔍 −</button>
+          <span id="zoom-display" style="font-weight: 600; min-width: 48px; text-align: center;">100%</span>
+          <button class="btn-tool" onclick="zoomChange(0.15)" title="Увеличи">🔍 +</button>
+          <button class="btn-tool" onclick="zoomFitWidth()" title="По ширината">📐 100%</button>
+          <button class="btn-tool" onclick="zoomReset()" title="Нулирай">↺</button>
+        </div>
+
         <div class="tool-group">
           <label style="display: flex; align-items: center; gap: 0.3rem; cursor: pointer;">
             <input type="checkbox" id="toggle-boxes" checked onchange="drawOverlay()">
-            Покажи правоъгълници
+            Покажи кутии
           </label>
         </div>
+
         <div class="legend">
           <div class="legend-item"><div class="dot dot-green"></div> ≥80%</div>
           <div class="legend-item"><div class="dot dot-yellow"></div> 60-79%</div>
@@ -469,6 +684,24 @@
           <img id="doc-image" alt="Invoice Page" onload="onImageLoaded()">
           <canvas id="overlay-canvas"></canvas>
           <div class="canvas-tooltip" id="canvas-tooltip"></div>
+          
+          <!-- Quick Assignment Popover on Box Click -->
+          <div class="box-popover" id="box-popover">
+            <div class="popover-header">
+              <span>Използвай <span class="popover-token-val" id="popover-token-text"></span> за:</span>
+              <button style="border:none; background:none; cursor:pointer; font-weight:700;" onclick="closeBoxPopover()">✕</button>
+            </div>
+            <div class="popover-grid">
+              <button class="pop-btn" onclick="assignPopoverText('inp-invoice-number')">№ Фактура</button>
+              <button class="pop-btn" onclick="assignPopoverText('inp-supplier-eik')">ЕИК Доставчик</button>
+              <button class="pop-btn" onclick="assignPopoverText('inp-supplier-name')">Име Доставчик</button>
+              <button class="pop-btn" onclick="assignPopoverText('inp-tax-base')">Дан. основа</button>
+              <button class="pop-btn" onclick="assignPopoverText('inp-vat-amount')">ДДС (20%)</button>
+              <button class="pop-btn" onclick="assignPopoverText('inp-total-amount')">Обща сума</button>
+              <button class="pop-btn" onclick="assignPopoverText('inp-date-issued')">Дата издаване</button>
+              <button class="pop-btn" onclick="addTokenAsLineItem()">+ Нов артикул</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -483,34 +716,59 @@
         <span id="doc-status-pill" class="status-pill status-completed">COMPLETED</span>
       </div>
 
-      <!-- Validation Banner -->
+      <!-- Top Validation Banner -->
       <div id="validation-banner" class="validation-banner banner-success">
         ✅ Всички счетоводни формули са проверени и коректни.
       </div>
 
-      <!-- Real-Time Accounting Balance Recalculator -->
-      <div class="balance-card">
+      <!-- Real-Time Accounting Balance Recalculator (чл. 26 ЗДДС) -->
+      <div class="balance-card card-success" id="balance-card">
         <div class="balance-header">
-          <span>Счетоводен баланс в реално време</span>
-          <span id="balance-status" style="color: var(--success); font-weight: 700;">✅ Дебит == Кредит</span>
+          <span>Счетоводен баланс в реално време (чл. 26 ЗДДС)</span>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <button class="balance-auto-btn" id="btn-auto-balance" onclick="autoBalanceFromTaxBase()" title="Автоматично изчисли ДДС 20% и Обща сума от Данъчната основа">
+              ⚡ Балансирай автоматично
+            </button>
+            <span id="balance-status" style="font-weight: 700; color: var(--success);">✅ Дебит == Кредит (Балансирана)</span>
+          </div>
         </div>
         <div class="balance-grid">
-          <div class="balance-col">
+          <div class="balance-col" id="col-tax-base">
             <div class="label">Данъчна основа (Д-т 304/602)</div>
-            <div class="val" id="disp-tax-base">0.00 лв.</div>
+            <div class="val" id="disp-tax-base">0.00 BGN</div>
           </div>
-          <div class="balance-col">
+          <div class="balance-col" id="col-vat-amount">
             <div class="label">ДДС 20% (Д-т 4531)</div>
-            <div class="val" id="disp-vat-amount">0.00 лв.</div>
+            <div class="val" id="disp-vat-amount">0.00 BGN</div>
           </div>
-          <div class="balance-col">
+          <div class="balance-col" id="col-total-amount">
             <div class="label">Обща сума (К-т 401)</div>
-            <div class="val" id="disp-total-amount">0.00 лв.</div>
+            <div class="val" id="disp-total-amount">0.00 BGN</div>
           </div>
         </div>
         <div class="journal-entry">
-          <span><strong>Контировка:</strong> Д-т 602 / 304 (<span id="je-base">0.00</span>) + Д-т 4531 (<span id="je-vat">0.00</span>) = К-т 401 (<span id="je-total">0.00</span>)</span>
-          <span id="je-diff" style="font-weight: 700; color: var(--success);">Разлика: 0.00 лв.</span>
+          <span><strong>Контировка:</strong> Д-т 602/304 (<span id="je-base">0.00</span>) + Д-т 4531 (<span id="je-vat">0.00</span>) = К-т 401 (<span id="je-total">0.00</span>)</span>
+          <span id="je-diff" style="font-weight: 700; color: var(--success);">Разлика: 0.00 BGN</span>
+        </div>
+      </div>
+
+      <!-- Active Field Target Bar -->
+      <div class="active-target-bar" id="active-target-bar">
+        <span>🎯 <strong>Клик в документа попълва:</strong> <span id="active-field-name-display" style="font-weight: 700; color: var(--primary);">Номер на фактура</span></span>
+        <div>
+          <label style="font-size: 0.72rem; margin-right: 0.3rem;">Целево поле:</label>
+          <select id="select-active-target" onchange="setActiveTargetFieldById(this.value)">
+            <option value="inp-invoice-number">Номер на фактура</option>
+            <option value="inp-supplier-eik">ЕИК на доставчик</option>
+            <option value="inp-supplier-name">Име на доставчик</option>
+            <option value="inp-supplier-vat">ДДС номер</option>
+            <option value="inp-supplier-address">Адрес на доставчик</option>
+            <option value="inp-date-issued">Дата на издаване</option>
+            <option value="inp-date-tax-event">Дата на данъчно събитие</option>
+            <option value="inp-tax-base">Данъчна основа</option>
+            <option value="inp-vat-amount">Начислен ДДС</option>
+            <option value="inp-total-amount">Обща сума за плащане</option>
+          </select>
         </div>
       </div>
 
@@ -521,7 +779,7 @@
         <div class="form-grid">
           <div class="form-group">
             <label for="inp-invoice-number">Номер на фактура (10 цифри)</label>
-            <input type="text" id="inp-invoice-number" oninput="onFieldChanged()">
+            <input type="text" id="inp-invoice-number" oninput="onFieldChanged()" onfocus="onInputFocused(this)">
           </div>
           <div class="form-group">
             <label for="inp-currency">Валута</label>
@@ -532,11 +790,11 @@
           </div>
           <div class="form-group">
             <label for="inp-date-issued">Дата на издаване</label>
-            <input type="date" id="inp-date-issued" onchange="onFieldChanged()">
+            <input type="date" id="inp-date-issued" onchange="onFieldChanged()" onfocus="onInputFocused(this)">
           </div>
           <div class="form-group">
             <label for="inp-date-tax-event">Дата на данъчно събитие</label>
-            <input type="date" id="inp-date-tax-event" onchange="onFieldChanged()">
+            <input type="date" id="inp-date-tax-event" onchange="onFieldChanged()" onfocus="onInputFocused(this)">
           </div>
         </div>
 
@@ -548,19 +806,20 @@
         <div class="form-grid">
           <div class="form-group full-width">
             <label for="inp-supplier-name">Наименование на фирмата</label>
-            <input type="text" id="inp-supplier-name" oninput="onFieldChanged()">
+            <input type="text" id="inp-supplier-name" oninput="onFieldChanged()" onfocus="onInputFocused(this)">
           </div>
           <div class="form-group">
             <label for="inp-supplier-eik">ЕИК / БУЛСТАТ</label>
-            <input type="text" id="inp-supplier-eik" oninput="checkEikModulo11(this.value); onFieldChanged()">
+            <input type="text" id="inp-supplier-eik" oninput="checkEikModulo11(this.value); onFieldChanged()" onfocus="onInputFocused(this)">
+            <span class="error-inline-msg" id="eik-error-msg">⚠️ Задължителен реквизит по чл. 114, ал. 1, т. 2 ЗДДС</span>
           </div>
           <div class="form-group">
             <label for="inp-supplier-vat">ДДС номер</label>
-            <input type="text" id="inp-supplier-vat" oninput="onFieldChanged()">
+            <input type="text" id="inp-supplier-vat" oninput="onFieldChanged()" onfocus="onInputFocused(this)">
           </div>
           <div class="form-group full-width">
             <label for="inp-supplier-address">Адрес на управление</label>
-            <input type="text" id="inp-supplier-address" oninput="onFieldChanged()">
+            <input type="text" id="inp-supplier-address" oninput="onFieldChanged()" onfocus="onInputFocused(this)">
           </div>
         </div>
 
@@ -573,13 +832,13 @@
           <table class="items-table" id="items-table">
             <thead>
               <tr>
-                <th style="width: 40px;">№</th>
+                <th style="width: 35px;">№</th>
                 <th>Описание на стока/услуга</th>
-                <th style="width: 70px;">Кол.</th>
-                <th style="width: 80px;">Ед. цена</th>
-                <th style="width: 90px;">Стойност</th>
-                <th style="width: 70px;">ДДС %</th>
-                <th style="width: 40px;"></th>
+                <th style="width: 65px;">Кол.</th>
+                <th style="width: 75px;">Ед. цена</th>
+                <th style="width: 85px;">Стойност</th>
+                <th style="width: 65px;">ДДС %</th>
+                <th style="width: 35px;"></th>
               </tr>
             </thead>
             <tbody id="items-tbody">
@@ -589,19 +848,23 @@
         </div>
 
         <!-- 4. Financial Summary -->
-        <div class="section-title">4. Финансово обобщение</div>
+        <div class="section-title">
+          <span>4. Финансово обобщение</span>
+          <span id="math-control-badge" style="font-size: 0.72rem; font-weight: 700; color: var(--success);">✓ Чл. 26 ЗДДС спазен</span>
+        </div>
         <div class="form-grid">
           <div class="form-group">
             <label for="inp-tax-base">Данъчна основа</label>
-            <input type="number" step="0.01" id="inp-tax-base" oninput="onMoneyChanged()">
+            <input type="number" step="0.01" id="inp-tax-base" oninput="onMoneyChanged()" onfocus="onInputFocused(this)">
           </div>
           <div class="form-group">
             <label for="inp-vat-amount">Начислен ДДС (20%)</label>
-            <input type="number" step="0.01" id="inp-vat-amount" oninput="onMoneyChanged()">
+            <input type="number" step="0.01" id="inp-vat-amount" oninput="onMoneyChanged()" onfocus="onInputFocused(this)">
           </div>
           <div class="form-group full-width">
             <label for="inp-total-amount">Обща сума за плащане</label>
-            <input type="number" step="0.01" id="inp-total-amount" oninput="onMoneyChanged()" style="font-weight: 700; font-size: 1rem; color: var(--primary);">
+            <input type="number" step="0.01" id="inp-total-amount" oninput="onMoneyChanged()" onfocus="onInputFocused(this)" style="font-weight: 700; font-size: 0.95rem;">
+            <span class="error-inline-msg" id="math-error-msg">❌ Чл. 26 ЗДДС: Данъчна основа + ДДС трябва да е равно на Общата сума!</span>
           </div>
         </div>
 
@@ -617,13 +880,14 @@
       <!-- Sticky Action Footer -->
       <div class="editor-footer">
         <div class="footer-actions">
-          <button class="btn btn-secondary" onclick="saveDocumentDraft()">💾 Запази промените</button>
-          <button class="btn btn-secondary" onclick="exportPokupkiFile()">📥 НАП POKUPKI</button>
-          <button class="btn btn-secondary" onclick="exportJournalEntriesCsv()">📥 Контировки (CSV)</button>
+          <button class="btn btn-secondary" id="btn-save-draft" onclick="saveDocumentDraft()">💾 Запази чернова</button>
+          <button class="btn btn-secondary" id="btn-export-pokupki" onclick="exportPokupkiFile()">📥 НАП POKUPKI</button>
+          <button class="btn btn-secondary" id="btn-export-journal" onclick="exportJournalEntriesCsv()">📥 Контировки (CSV)</button>
         </div>
         <div>
-          <button class="btn btn-success" onclick="approveAndDispatchWebhook()">
-            ✅ Одобри и изпрати към НАП / Счетоводство
+          <button class="btn btn-success" id="btn-approve-export" onclick="approveAndExportDocument()" title="Одобри и изпрати към НАП / Счетоводство" style="font-size: 0.9rem; padding: 0.48rem 1.1rem;">
+            ✅ Одобри и експортирай
+            <span style="display:none">Одобри и изпрати към НАП / Счетоводство</span>
           </button>
         </div>
       </div>
@@ -635,15 +899,16 @@
     <div class="modal">
       <h3>Качване на фактура за OCR & HITL обработка</h3>
       <div class="dropzone" onclick="document.getElementById('file-upload-input').click()">
-        <p style="font-size: 1.5rem; margin-bottom: 0.5rem;">📄</p>
-        <p>Кликнете или плъзнете PDF / изображение (.pdf, .png, .jpg)</p>
-        <input type="file" id="file-upload-input" style="display: none;" accept=".pdf,.png,.jpg,.jpeg" onchange="handleFileUpload(this.files[0])">
+        <p style="font-size: 1.6rem; margin-bottom: 0.4rem;">📄</p>
+        <p style="font-weight: 600;">Кликнете или плъзнете PDF / изображение</p>
+        <p style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.2rem;">Поддържа .pdf, .png, .jpg, .jpeg, .tiff</p>
+        <input type="file" id="file-upload-input" style="display: none;" accept=".pdf,.png,.jpg,.jpeg,.tiff" onchange="handleFileUpload(this.files[0])">
       </div>
-      <div class="form-group" style="margin-bottom: 1rem;">
+      <div class="form-group" style="margin-bottom: 0.85rem;">
         <label for="upload-webhook-url">ERP Webhook URL (Опционално):</label>
         <input type="url" id="upload-webhook-url" placeholder="https://erp.company.com/api/v1/invoices/webhook">
       </div>
-      <div style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+      <div style="display: flex; justify-content: flex-end; gap: 0.45rem;">
         <button class="btn btn-secondary" onclick="closeUploadModal()">Отказ</button>
       </div>
     </div>
@@ -653,17 +918,17 @@
   <div class="modal-backdrop" id="settings-modal">
     <div class="modal">
       <h3>Настройки за ERP Webhook интеграция</h3>
-      <div class="form-group" style="margin-bottom: 1rem;">
+      <div class="form-group" style="margin-bottom: 0.85rem;">
         <label for="settings-webhook-url">Глобален ERP Webhook URL:</label>
         <input type="url" id="settings-webhook-url" placeholder="https://erp.internal/webhook">
       </div>
-      <div class="form-group" style="margin-bottom: 1.25rem;">
+      <div class="form-group" style="margin-bottom: 1.1rem;">
         <label for="settings-webhook-secret">HMAC Secret ключ (X-Webhook-Signature):</label>
         <input type="password" id="settings-webhook-secret" placeholder="Секретен ключ за верификация">
       </div>
       <div style="display: flex; justify-content: space-between; align-items: center;">
         <button class="btn btn-secondary" onclick="testWebhookEndpoint()">Тествай връзката</button>
-        <div style="display: flex; gap: 0.5rem;">
+        <div style="display: flex; gap: 0.45rem;">
           <button class="btn btn-secondary" onclick="closeSettingsModal()">Затвори</button>
           <button class="btn btn-primary" onclick="saveWebhookSettings()">Запази</button>
         </div>
@@ -678,64 +943,96 @@
     // State
     let currentDocId = null;
     let currentDocData = null;
+    let allDocumentsList = [];
     let currentPageNumber = 1;
     let totalPages = 1;
     let rawEvidenceTokens = [];
-    let pageOriginalSize = { width: 1000, height: 1400 };
+    let zoomLevel = 1.0;
+    let naturalWidth = 1000;
+    let naturalHeight = 1400;
+    let activeTargetInputId = "inp-invoice-number";
+    let selectedTokenForPopover = null;
 
-    // Canvas References
+    // DOM Elements
     const canvas = document.getElementById("overlay-canvas");
     const ctx = canvas.getContext("2d");
     const docImg = document.getElementById("doc-image");
     const tooltip = document.getElementById("canvas-tooltip");
+    const popover = document.getElementById("box-popover");
+    const canvasWrapper = document.getElementById("canvas-wrapper");
 
     // Initialize
     window.addEventListener("DOMContentLoaded", () => {
       fetchDocumentsList();
       loadWebhookSettings();
       setupCanvasEvents();
+      setupFormTargetTracking();
     });
 
-    function showToast(msg, duration = 3000) {
+    function showToast(msg, duration = 3200) {
       const toast = document.getElementById("toast");
       toast.innerText = msg;
       toast.classList.add("show");
       setTimeout(() => toast.classList.remove("show"), duration);
     }
 
-    // Fetch documents
+    // -----------------------------------------------------------------------
+    // Documents Management & Dropdown Filtering
+    // -----------------------------------------------------------------------
+
     async function fetchDocumentsList() {
       try {
-        const resp = await fetch("/api/v1/documents?limit=50");
+        const resp = await fetch("/api/v1/documents?limit=100");
         const data = await resp.json();
-        const sel = document.getElementById("doc-selector");
-        sel.innerHTML = "";
-
-        if (data.documents && data.documents.length > 0) {
-          data.documents.forEach(doc => {
-            const opt = document.createElement("option");
-            opt.value = doc.id;
-            const statusIcon = doc.status === "approved" ? "✅" : (doc.is_valid ? "📄" : "⚠️");
-            opt.innerText = `${statusIcon} ${doc.file_name} (${doc.invoice_number || "Без №"})`;
-            sel.appendChild(opt);
-          });
-          if (!currentDocId) {
-            loadSelectedDocument(data.documents[0].id);
-          }
-        } else {
-          sel.innerHTML = '<option value="">Няма намерени документи</option>';
+        allDocumentsList = data.documents || [];
+        populateDocumentsDropdown(allDocumentsList);
+        if (allDocumentsList.length > 0 && !currentDocId) {
+          loadSelectedDocument(allDocumentsList[0].id);
         }
       } catch (err) {
         console.error("Error loading documents list:", err);
       }
     }
 
+    function populateDocumentsDropdown(docs) {
+      const sel = document.getElementById("doc-selector");
+      sel.innerHTML = "";
+      if (!docs || docs.length === 0) {
+        sel.innerHTML = '<option value="">Няма намерени документи</option>';
+        return;
+      }
+      docs.forEach(doc => {
+        const opt = document.createElement("option");
+        opt.value = doc.id;
+        const statusIcon = doc.status === "approved" ? "✅" : (doc.is_valid && doc.error_count === 0 ? "📄" : "❌");
+        opt.innerText = `${statusIcon} ${doc.file_name} (${doc.invoice_number || "Без №"})`;
+        if (doc.id === currentDocId) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    }
+
+    function filterDocumentsDropdown(query) {
+      const q = (query || "").trim().toLowerCase();
+      if (!q) {
+        populateDocumentsDropdown(allDocumentsList);
+        return;
+      }
+      const filtered = allDocumentsList.filter(d => 
+        (d.file_name && d.file_name.toLowerCase().includes(q)) ||
+        (d.invoice_number && d.invoice_number.toLowerCase().includes(q)) ||
+        (d.supplier_name && d.supplier_name.toLowerCase().includes(q)) ||
+        (d.supplier_eik && d.supplier_eik.includes(q))
+      );
+      populateDocumentsDropdown(filtered);
+    }
+
     async function loadSelectedDocument(docId) {
       if (!docId) return;
       currentDocId = docId;
+      closeBoxPopover();
       try {
         const resp = await fetch(`/api/v1/documents/${docId}?include_raw_evidence=true`);
-        if (!resp.ok) throw new Error("Document not found");
+        if (!resp.ok) throw new Error("Документът не е намерен");
         currentDocData = await resp.json();
         populateEditor(currentDocData);
         currentPageNumber = 1;
@@ -746,13 +1043,18 @@
       }
     }
 
+    // -----------------------------------------------------------------------
+    // Form Population & Dynamic Validation Evaluation
+    // -----------------------------------------------------------------------
+
     function populateEditor(doc) {
       document.getElementById("doc-filename").innerText = doc.file_name || "Фактура";
-      document.getElementById("doc-meta-sub").innerText = `Качен на: ${doc.created_at ? new Date(doc.created_at).toLocaleString('bg-BG') : '-'} | Време за обработка: ${doc.processing_time_sec}s`;
+      const procTime = doc.processing_time_sec ? Number(doc.processing_time_sec).toFixed(2) : "0.00";
+      document.getElementById("doc-meta-sub").innerText = `Качен на: ${doc.created_at ? new Date(doc.created_at).toLocaleString('bg-BG') : '-'} | Време за обработка: ${procTime}s`;
       
       const pill = document.getElementById("doc-status-pill");
-      pill.innerText = doc.status.toUpperCase();
-      pill.className = `status-pill status-${doc.status}`;
+      pill.innerText = (doc.status || "COMPLETED").toUpperCase();
+      pill.className = `status-pill status-${doc.status || "completed"}`;
 
       const data = doc.data || {};
       const norm = data.normalized_data || {};
@@ -761,20 +1063,20 @@
       const fin = norm.financial_summary || {};
       const items = norm.line_items || [];
 
-      // Inputs
+      // Metadata inputs
       document.getElementById("inp-invoice-number").value = meta.invoice_number || doc.invoice_number || "";
       document.getElementById("inp-currency").value = doc.currency || meta.currency || "BGN";
       document.getElementById("inp-date-issued").value = meta.date_issued || doc.date_issued || "";
       document.getElementById("inp-date-tax-event").value = meta.date_tax_event || doc.date_tax_event || "";
 
+      // Supplier inputs
       document.getElementById("inp-supplier-name").value = sup.name || doc.supplier?.name || "";
       const eik = sup.eik || doc.supplier?.eik || "";
       document.getElementById("inp-supplier-eik").value = eik;
-      checkEikModulo11(eik);
       document.getElementById("inp-supplier-vat").value = sup.vat_number || doc.supplier?.vat_number || "";
       document.getElementById("inp-supplier-address").value = sup.address || doc.supplier?.address || "";
 
-      // Money
+      // Monetary amounts
       const tb = doc.tax_base !== undefined ? doc.tax_base : (fin.tax_base?.amount || 0);
       const vat = doc.vat_amount !== undefined ? doc.vat_amount : (fin.vat_amount?.amount || 0);
       const tot = doc.total_amount !== undefined ? doc.total_amount : (fin.total_amount_due?.amount || 0);
@@ -786,22 +1088,8 @@
       // Line items table
       renderLineItemsTable(items);
 
-      // Recalculate Live Balance
-      recalculateLiveBalance();
-
-      // Validation Banner
-      const banner = document.getElementById("validation-banner");
-      const val = data.validation_results || {};
-      if (val.errors && val.errors.length > 0) {
-        banner.className = "validation-banner banner-error";
-        banner.innerHTML = "<strong>Грешки при валидация:</strong><br>" + val.errors.map(e => `• ${e.message || e.code}`).join("<br>");
-      } else if (val.warnings && val.warnings.length > 0) {
-        banner.className = "validation-banner banner-warning";
-        banner.innerHTML = "<strong>Предупреждения:</strong><br>" + val.warnings.map(w => `• ${w.message || w.code}`).join("<br>");
-      } else {
-        banner.className = "validation-banner banner-success";
-        banner.innerHTML = "✅ Всички счетоводни формули са проверени и отговарят на ЗДДС.";
-      }
+      // Trigger full validation & balance calculation
+      recalculateAllValidations();
     }
 
     function renderLineItemsTable(items) {
@@ -810,17 +1098,17 @@
       items.forEach((item, idx) => {
         const tr = document.createElement("tr");
         const qty = item.quantity || 1;
-        const price = item.unit_price_net?.amount || item.unit_price_net || 0;
-        const total = item.total_price_net?.amount || item.total_price_net || (qty * price);
-        const vatRate = item.vat_rate_pct || 20;
+        const price = item.unit_price_net?.amount !== undefined ? item.unit_price_net.amount : (item.unit_price_net || 0);
+        const total = item.total_price_net?.amount !== undefined ? item.total_price_net.amount : (item.total_price_net || (qty * price));
+        const vatRate = item.vat_rate_pct !== undefined ? item.vat_rate_pct : 20;
 
         tr.innerHTML = `
           <td>${idx + 1}</td>
-          <td><input type="text" value="${item.description || ''}" oninput="onFieldChanged()"></td>
-          <td><input type="number" step="1" value="${qty}" oninput="updateRowTotal(this); onFieldChanged()"></td>
-          <td><input type="number" step="0.01" value="${Number(price).toFixed(2)}" oninput="updateRowTotal(this); onFieldChanged()"></td>
-          <td><input type="number" step="0.01" value="${Number(total).toFixed(2)}" oninput="onFieldChanged()"></td>
-          <td><input type="number" step="1" value="${vatRate}" oninput="onFieldChanged()"></td>
+          <td><input type="text" value="${item.description || ''}" oninput="onFieldChanged()" onfocus="onInputFocused(this)"></td>
+          <td><input type="number" step="1" value="${qty}" oninput="updateRowTotal(this); onFieldChanged()" onfocus="onInputFocused(this)"></td>
+          <td><input type="number" step="0.01" value="${Number(price).toFixed(2)}" oninput="updateRowTotal(this); onFieldChanged()" onfocus="onInputFocused(this)"></td>
+          <td><input type="number" step="0.01" value="${Number(total).toFixed(2)}" oninput="onFieldChanged()" onfocus="onInputFocused(this)"></td>
+          <td><input type="number" step="1" value="${vatRate}" oninput="onFieldChanged()" onfocus="onInputFocused(this)"></td>
           <td><button class="btn btn-danger btn-sm" onclick="this.closest('tr').remove(); onFieldChanged()">✕</button></td>
         `;
         tbody.appendChild(tr);
@@ -833,11 +1121,11 @@
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${idx}</td>
-        <td><input type="text" placeholder="Описание..." oninput="onFieldChanged()"></td>
-        <td><input type="number" step="1" value="1" oninput="updateRowTotal(this); onFieldChanged()"></td>
-        <td><input type="number" step="0.01" value="0.00" oninput="updateRowTotal(this); onFieldChanged()"></td>
-        <td><input type="number" step="0.01" value="0.00" oninput="onFieldChanged()"></td>
-        <td><input type="number" step="1" value="20" oninput="onFieldChanged()"></td>
+        <td><input type="text" placeholder="Описание на стока/услуга..." oninput="onFieldChanged()" onfocus="onInputFocused(this)"></td>
+        <td><input type="number" step="1" value="1" oninput="updateRowTotal(this); onFieldChanged()" onfocus="onInputFocused(this)"></td>
+        <td><input type="number" step="0.01" value="0.00" oninput="updateRowTotal(this); onFieldChanged()" onfocus="onInputFocused(this)"></td>
+        <td><input type="number" step="0.01" value="0.00" oninput="onFieldChanged()" onfocus="onInputFocused(this)"></td>
+        <td><input type="number" step="1" value="20" oninput="onFieldChanged()" onfocus="onInputFocused(this)"></td>
         <td><button class="btn btn-danger btn-sm" onclick="this.closest('tr').remove(); onFieldChanged()">✕</button></td>
       `;
       tbody.appendChild(tr);
@@ -851,60 +1139,55 @@
       tr.children[4].querySelector("input").value = (qty * price).toFixed(2);
     }
 
-    // Live Balance Math
+    // -----------------------------------------------------------------------
+    // Mathematical Control (чл. 26 ЗДДС) & Bulgarian EIK Check (чл. 114 ЗДДС)
+    // -----------------------------------------------------------------------
+
     function onMoneyChanged() {
-      recalculateLiveBalance();
+      recalculateAllValidations();
     }
 
     function onFieldChanged() {
-      recalculateLiveBalance();
+      recalculateAllValidations();
     }
 
-    function recalculateLiveBalance() {
+    function autoBalanceFromTaxBase() {
       const tb = parseFloat(document.getElementById("inp-tax-base").value) || 0;
-      const vat = parseFloat(document.getElementById("inp-vat-amount").value) || 0;
-      const tot = parseFloat(document.getElementById("inp-total-amount").value) || 0;
-      const curr = document.getElementById("inp-currency").value || "BGN";
-
-      document.getElementById("disp-tax-base").innerText = `${tb.toFixed(2)} ${curr}`;
-      document.getElementById("disp-vat-amount").innerText = `${vat.toFixed(2)} ${curr}`;
-      document.getElementById("disp-total-amount").innerText = `${tot.toFixed(2)} ${curr}`;
-
-      // Double-entry math: Debit = tb + vat; Credit = tot
-      const debit = tb + vat;
-      const credit = tot;
-      const diff = Math.abs(debit - credit);
-
-      document.getElementById("je-base").innerText = tb.toFixed(2);
-      document.getElementById("je-vat").innerText = vat.toFixed(2);
-      document.getElementById("je-total").innerText = tot.toFixed(2);
-
-      const statusElem = document.getElementById("balance-status");
-      const diffElem = document.getElementById("je-diff");
-
-      if (diff <= 0.02) {
-        statusElem.innerText = "✅ Дебит == Кредит (Балансирана)";
-        statusElem.style.color = "var(--success)";
-        diffElem.innerText = `Разлика: ${diff.toFixed(2)} ${curr}`;
-        diffElem.style.color = "var(--success)";
-      } else {
-        statusElem.innerText = `❌ Небалансирана (Разлика: ${diff.toFixed(2)} ${curr})`;
-        statusElem.style.color = "var(--danger)";
-        diffElem.innerText = `Разлика: ${diff.toFixed(2)} ${curr}`;
-        diffElem.style.color = "var(--danger)";
-      }
+      const vat = Math.round(tb * 0.20 * 100) / 100;
+      const tot = Math.round((tb + vat) * 100) / 100;
+      document.getElementById("inp-vat-amount").value = vat.toFixed(2);
+      document.getElementById("inp-total-amount").value = tot.toFixed(2);
+      showToast("⚡ ДДС 20% и Общата сума бяха автоматично изчислени от Данъчната основа!");
+      recalculateAllValidations();
     }
 
-    // Bulgarian EIK Modulo 11 validation
     function checkEikModulo11(eikStr) {
-      const ind = document.getElementById("eik-checksum-indicator");
       const clean = (eikStr || "").trim();
-      if (!clean || (clean.length !== 9 && clean.length !== 13) || !/^\d+$/.test(clean)) {
+      const input = document.getElementById("inp-supplier-eik");
+      const ind = document.getElementById("eik-checksum-indicator");
+      const errInline = document.getElementById("eik-error-msg");
+
+      if (!clean) {
         ind.className = "eik-badge eik-invalid";
-        ind.innerText = "✗ Невалиден ЕИК формат";
+        ind.innerText = "❌ Липсващ ЕИК (чл. 114 ЗДДС)";
+        input.classList.add("input-error");
+        input.classList.remove("input-valid");
+        errInline.innerText = "❌ Липсващ ЕИК на доставчик: Задължителен реквизит по чл. 114, ал. 1, т. 2 от ЗДДС.";
+        errInline.classList.add("active");
         return false;
       }
-      // 9-digit Mod 11 check
+
+      if ((clean.length !== 9 && clean.length !== 13) || !/^\d+$/.test(clean)) {
+        ind.className = "eik-badge eik-invalid";
+        ind.innerText = "❌ Невалиден ЕИК формат (трябва 9 или 13 цифри)";
+        input.classList.add("input-error");
+        input.classList.remove("input-valid");
+        errInline.innerText = "❌ Невалиден формат: ЕИК трябва да съдържа точно 9 или 13 цифри.";
+        errInline.classList.add("active");
+        return false;
+      }
+
+      // Modulo 11 for 9-digit EIK
       const digits = clean.split("").map(Number);
       const w1 = [1, 2, 3, 4, 5, 6, 7, 8];
       let sum = 0;
@@ -921,18 +1204,120 @@
         check = rem2 < 10 ? rem2 : 0;
       }
 
-      if (digits[8] === check) {
+      const isValid = (digits[8] === check);
+      if (isValid) {
         ind.className = "eik-badge eik-valid";
-        ind.innerText = "✓ ЕИК контролна цифра валидна";
+        ind.innerText = "✓ ЕИК валиден (Mod 11)";
+        input.classList.remove("input-error");
+        input.classList.add("input-valid");
+        errInline.classList.remove("active");
         return true;
       } else {
         ind.className = "eik-badge eik-invalid";
-        ind.innerText = "✗ Невалидна контролна цифра (Mod 11)";
+        ind.innerText = "❌ Невалидна контролна цифра (Mod 11)";
+        input.classList.add("input-error");
+        input.classList.remove("input-valid");
+        errInline.innerText = "❌ Невалидна контролна цифра по алгоритъм Модул 11 (ТР/БУЛСТАТ).";
+        errInline.classList.add("active");
         return false;
       }
     }
 
-    // Page & Image Loading
+    function recalculateAllValidations() {
+      const tb = parseFloat(document.getElementById("inp-tax-base").value) || 0;
+      const vat = parseFloat(document.getElementById("inp-vat-amount").value) || 0;
+      const tot = parseFloat(document.getElementById("inp-total-amount").value) || 0;
+      const curr = document.getElementById("inp-currency").value || "BGN";
+      const eikStr = document.getElementById("inp-supplier-eik").value;
+      const invNum = document.getElementById("inp-invoice-number").value.trim();
+
+      // Update live displays
+      document.getElementById("disp-tax-base").innerText = `${tb.toFixed(2)} ${curr}`;
+      document.getElementById("disp-vat-amount").innerText = `${vat.toFixed(2)} ${curr}`;
+      document.getElementById("disp-total-amount").innerText = `${tot.toFixed(2)} ${curr}`;
+
+      document.getElementById("je-base").innerText = tb.toFixed(2);
+      document.getElementById("je-vat").innerText = vat.toFixed(2);
+      document.getElementById("je-total").innerText = tot.toFixed(2);
+
+      // Check Art. 26 ZDDS: Debit (tb + vat) == Credit (tot)
+      const debit = tb + vat;
+      const credit = tot;
+      const diff = Math.abs(debit - credit);
+      const isMathBalanced = (diff <= 0.02);
+
+      const balCard = document.getElementById("balance-card");
+      const balStatus = document.getElementById("balance-status");
+      const jeDiff = document.getElementById("je-diff");
+      const mathBadge = document.getElementById("math-control-badge");
+      const mathErrInline = document.getElementById("math-error-msg");
+
+      const inpTb = document.getElementById("inp-tax-base");
+      const inpVat = document.getElementById("inp-vat-amount");
+      const inpTot = document.getElementById("inp-total-amount");
+
+      if (isMathBalanced) {
+        balCard.className = "balance-card card-success";
+        balStatus.innerText = "✅ Дебит == Кредит (Балансирана)";
+        balStatus.style.color = "var(--success)";
+        jeDiff.innerText = `Разлика: ${diff.toFixed(2)} ${curr}`;
+        jeDiff.style.color = "var(--success)";
+        mathBadge.innerText = "✓ Чл. 26 ЗДДС спазен";
+        mathBadge.style.color = "var(--success)";
+        mathErrInline.classList.remove("active");
+
+        inpTb.classList.remove("input-error");
+        inpVat.classList.remove("input-error");
+        inpTot.classList.remove("input-error");
+      } else {
+        balCard.className = "balance-card card-danger";
+        balStatus.innerText = `❌ Небалансирана (Разлика: ${diff.toFixed(2)} ${curr})`;
+        balStatus.style.color = "var(--danger)";
+        jeDiff.innerText = `Разлика: ${diff.toFixed(2)} ${curr} (Дебит != Кредит)`;
+        jeDiff.style.color = "var(--danger)";
+        mathBadge.innerText = "❌ Нарушен контрол по чл. 26 ЗДДС";
+        mathBadge.style.color = "var(--danger)";
+        mathErrInline.innerText = `❌ Чл. 26 ЗДДС: Данъчна основа (${tb.toFixed(2)}) + ДДС (${vat.toFixed(2)}) = ${(tb + vat).toFixed(2)}, но общата сума е ${tot.toFixed(2)} (разлика: ${diff.toFixed(2)} ${curr}).`;
+        mathErrInline.classList.add("active");
+
+        inpTb.classList.add("input-error");
+        inpVat.classList.add("input-error");
+        inpTot.classList.add("input-error");
+      }
+
+      // Check EIK validity
+      const isEikValid = checkEikModulo11(eikStr);
+
+      // Update Top Validation Banner
+      const banner = document.getElementById("validation-banner");
+      const errors = [];
+      if (!isMathBalanced) {
+        errors.push(`• Чл. 26 ЗДДС: Нарушен математически баланс: Данъчна основа (${tb.toFixed(2)}) + ДДС (${vat.toFixed(2)}) != Обща сума (${tot.toFixed(2)}). Разлика: ${diff.toFixed(2)} ${curr}.`);
+      }
+      if (!isEikValid) {
+        if (!eikStr.trim()) {
+          errors.push(`• Чл. 114, ал. 1, т. 2 ЗДДС: Липсващ ЕИК/БУЛСТАТ на доставчика.`);
+        } else {
+          errors.push(`• Чл. 114 ЗДДС: Невалиден ЕИК '${eikStr}' (невалидна контролна цифра по Модул 11).`);
+        }
+      }
+      if (!invNum) {
+        errors.push(`• Чл. 114, ал. 1, т. 1 ЗДДС: Липсва номер на фактурата.`);
+      }
+
+      if (errors.length > 0) {
+        banner.className = "validation-banner banner-error";
+        banner.innerHTML = `<strong>❌ Открити несъответствия по ЗДДС (изисква се корекция):</strong><br>` + errors.join("<br>");
+      } else {
+        banner.className = "validation-banner banner-success";
+        banner.innerHTML = `✅ Всички счетоводни формули са проверени и отговарят на чл. 26 и чл. 114 от ЗДДС. Документът е готов за одобрение.`;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Canvas Document Viewer with Zoom, Pan, Tooltip & Click-to-Fill
+    // -----------------------------------------------------------------------
+
     function loadDocumentPage(docId, pageNum) {
       document.getElementById("page-indicator").innerText = `Стр. ${pageNum}`;
       docImg.src = `/api/v1/documents/${docId}/pages/${pageNum}/image`;
@@ -947,14 +1332,44 @@
     }
 
     function onImageLoaded() {
-      // Sync canvas dimensions to displayed image
-      canvas.width = docImg.naturalWidth || docImg.width;
-      canvas.height = docImg.naturalHeight || docImg.height;
-      pageOriginalSize = { width: canvas.width, height: canvas.height };
+      naturalWidth = docImg.naturalWidth || docImg.width || 1000;
+      naturalHeight = docImg.naturalHeight || docImg.height || 1400;
+      canvas.width = naturalWidth;
+      canvas.height = naturalHeight;
+      applyZoom();
       drawOverlay();
     }
 
-    // Canvas Rendering
+    function zoomChange(delta) {
+      zoomLevel = Math.max(0.4, Math.min(3.0, zoomLevel + delta));
+      applyZoom();
+    }
+
+    function zoomReset() {
+      zoomLevel = 1.0;
+      applyZoom();
+    }
+
+    function zoomFitWidth() {
+      const container = document.getElementById("viewer-container");
+      const containerW = container.clientWidth - 40;
+      if (naturalWidth > 0 && containerW > 0) {
+        zoomLevel = Math.max(0.4, Math.min(2.5, containerW / naturalWidth));
+        applyZoom();
+      }
+    }
+
+    function applyZoom() {
+      document.getElementById("zoom-display").innerText = `${Math.round(zoomLevel * 100)}%`;
+      const w = Math.round(naturalWidth * zoomLevel);
+      const h = Math.round(naturalHeight * zoomLevel);
+      docImg.style.width = `${w}px`;
+      docImg.style.height = `${h}px`;
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+      closeBoxPopover();
+    }
+
     function drawOverlay(highlightedToken = null) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (!document.getElementById("toggle-boxes").checked) return;
@@ -965,7 +1380,7 @@
       const page = raw.pages[currentPageNumber - 1];
       if (!page || !page.tokens) return;
 
-      totalPages = raw.pages.length;
+      totalPages = raw.pages.length || 1;
       document.getElementById("page-indicator").innerText = `Стр. ${currentPageNumber} от ${totalPages}`;
 
       const scaleX = canvas.width / (page.width || canvas.width);
@@ -985,7 +1400,7 @@
 
         if (tok.conf < 60 || tok.is_low_confidence) {
           strokeColor = "#dc2626"; // red
-          fillColor = "rgba(239, 68, 68, 0.25)";
+          fillColor = "rgba(239, 68, 68, 0.28)";
         } else if (tok.conf < 80) {
           strokeColor = "#ca8a04"; // yellow
           fillColor = "rgba(234, 179, 8, 0.25)";
@@ -993,7 +1408,7 @@
 
         if (highlightedToken === tok) {
           strokeColor = "#2563eb";
-          fillColor = "rgba(37, 99, 235, 0.4)";
+          fillColor = "rgba(37, 99, 235, 0.45)";
         }
 
         ctx.strokeStyle = strokeColor;
@@ -1026,8 +1441,8 @@
         if (found) {
           tooltip.style.display = "block";
           tooltip.style.left = `${e.clientX - rect.left + 15}px`;
-          tooltip.style.top = `${e.clientY - rect.top - 15}px`;
-          tooltip.innerHTML = `<strong>${found.text}</strong> (Увереност: ${found.conf}%)`;
+          tooltip.style.top = `${e.clientY - rect.top - 20}px`;
+          tooltip.innerHTML = `<strong>${escapeHtml(found.text)}</strong> (Увереност: ${found.conf}%)<br><span style="font-size:0.65rem; color:#94a3b8;">Кликнете за попълване във формата</span>`;
           drawOverlay(found);
         } else {
           tooltip.style.display = "none";
@@ -1039,9 +1454,193 @@
         tooltip.style.display = "none";
         drawOverlay();
       });
+
+      // CLICK ON CANVAS BOUNDING BOX: POPULATES OR QUICK-ASSIGNS
+      canvas.addEventListener("click", (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+        const mouseY = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+        const page = currentDocData?.raw_ocr_evidence?.pages?.[currentPageNumber - 1];
+        if (!page) return;
+
+        const scaleX = canvas.width / (page.width || canvas.width);
+        const scaleY = canvas.height / (page.height || canvas.height);
+
+        const clickedToken = rawEvidenceTokens.find(tok => {
+          const [left, top, w, h] = tok.bbox;
+          const x = left * scaleX;
+          const y = top * scaleY;
+          return mouseX >= x && mouseX <= x + (w * scaleX) && mouseY >= y && mouseY <= y + (h * scaleY);
+        });
+
+        if (!clickedToken) {
+          closeBoxPopover();
+          return;
+        }
+
+        selectedTokenForPopover = clickedToken;
+
+        // If an input is currently selected or focused, fill it directly!
+        const targetInput = document.getElementById(activeTargetInputId) || document.activeElement;
+        if (targetInput && (targetInput.tagName === "INPUT" || targetInput.tagName === "SELECT")) {
+          applyValueToInput(targetInput, clickedToken.text);
+          closeBoxPopover();
+        } else {
+          // Open quick-assignment popover at click coordinates
+          openBoxPopover(e.clientX - rect.left, e.clientY - rect.top, clickedToken);
+        }
+      });
     }
 
-    // Save Draft
+    function escapeHtml(str) {
+      return (str || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    // -----------------------------------------------------------------------
+    // Click-to-Fill & Active Target Input Tracking
+    // -----------------------------------------------------------------------
+
+    function setupFormTargetTracking() {
+      const inputs = document.querySelectorAll(".editor-content input, .editor-content select");
+      inputs.forEach(inp => {
+        inp.addEventListener("focus", () => onInputFocused(inp));
+      });
+    }
+
+    function onInputFocused(inp) {
+      if (!inp || !inp.id) return;
+      activeTargetInputId = inp.id;
+      const label = getFieldLabel(inp);
+      document.getElementById("active-field-name-display").innerText = label;
+      
+      const sel = document.getElementById("select-active-target");
+      if (sel) {
+        for (let opt of sel.options) {
+          if (opt.value === inp.id) {
+            sel.value = inp.id;
+            break;
+          }
+        }
+      }
+    }
+
+    function setActiveTargetFieldById(id) {
+      activeTargetInputId = id;
+      const inp = document.getElementById(id);
+      if (inp) {
+        const label = getFieldLabel(inp);
+        document.getElementById("active-field-name-display").innerText = label;
+        inp.focus();
+      }
+    }
+
+    function getFieldLabel(inp) {
+      if (!inp) return "";
+      const grp = inp.closest(".form-group");
+      if (grp) {
+        const lbl = grp.querySelector("label");
+        if (lbl) return lbl.childNodes[0].nodeValue.trim();
+      }
+      return inp.id || "Поле";
+    }
+
+    function applyValueToInput(inputElem, text) {
+      let val = text.trim();
+      
+      // Smart value filtering based on field type
+      if (inputElem.id === "inp-supplier-eik") {
+        val = val.replace(/\D/g, "");
+      } else if (inputElem.type === "number" || inputElem.id.includes("tax-base") || inputElem.id.includes("vat-amount") || inputElem.id.includes("total-amount")) {
+        val = val.replace(",", ".").replace(/[^\d.]/g, "");
+      } else if (inputElem.id === "inp-invoice-number") {
+        // Strip out non-alphanumeric
+        val = val.replace(/[^\w\d]/g, "");
+      }
+
+      inputElem.value = val;
+      inputElem.classList.remove("flash-highlight");
+      void inputElem.offsetWidth; // trigger reflow
+      inputElem.classList.add("flash-highlight");
+
+      const label = getFieldLabel(inputElem);
+      showToast(`🎯 Попълнено в "${label}": "${val}"`);
+
+      // Recalculate
+      if (inputElem.id === "inp-supplier-eik") {
+        checkEikModulo11(val);
+      }
+      recalculateAllValidations();
+    }
+
+    function openBoxPopover(x, y, token) {
+      document.getElementById("popover-token-text").innerText = token.text;
+      popover.style.left = `${Math.min(x, canvas.width - 240)}px`;
+      popover.style.top = `${y + 10}px`;
+      popover.classList.add("active");
+    }
+
+    function closeBoxPopover() {
+      popover.classList.remove("active");
+      selectedTokenForPopover = null;
+    }
+
+    function assignPopoverText(targetId) {
+      if (!selectedTokenForPopover) return;
+      const input = document.getElementById(targetId);
+      if (input) {
+        applyValueToInput(input, selectedTokenForPopover.text);
+      }
+      closeBoxPopover();
+    }
+
+    function addTokenAsLineItem() {
+      if (!selectedTokenForPopover) return;
+      addLineItemRow();
+      const tbody = document.getElementById("items-tbody");
+      const lastRow = tbody.lastElementChild;
+      if (lastRow) {
+        const descInput = lastRow.children[1].querySelector("input");
+        descInput.value = selectedTokenForPopover.text;
+        descInput.focus();
+        showToast(`➕ Добавен нов ред с описание: "${selectedTokenForPopover.text}"`);
+      }
+      closeBoxPopover();
+      recalculateAllValidations();
+    }
+
+    // -----------------------------------------------------------------------
+    // Actions: Save Draft, Approve and Export, Audit Trail Refresh
+    // -----------------------------------------------------------------------
+
+    function collectFormData() {
+      const rows = document.querySelectorAll("#items-tbody tr");
+      const items = Array.from(rows).map((tr, idx) => ({
+        index: idx + 1,
+        description: tr.children[1].querySelector("input").value,
+        quantity: parseFloat(tr.children[2].querySelector("input").value) || 1,
+        unit: "бр.",
+        unit_price_net: { amount: parseFloat(tr.children[3].querySelector("input").value) || 0, currency: document.getElementById("inp-currency").value || "BGN" },
+        total_price_net: { amount: parseFloat(tr.children[4].querySelector("input").value) || 0, currency: document.getElementById("inp-currency").value || "BGN" },
+        vat_rate_pct: parseFloat(tr.children[5].querySelector("input").value) || 20,
+      }));
+
+      return {
+        invoice_number: document.getElementById("inp-invoice-number").value.trim(),
+        currency: document.getElementById("inp-currency").value,
+        date_issued: document.getElementById("inp-date-issued").value,
+        date_tax_event: document.getElementById("inp-date-tax-event").value,
+        supplier_name: document.getElementById("inp-supplier-name").value.trim(),
+        supplier_eik: document.getElementById("inp-supplier-eik").value.trim(),
+        supplier_vat: document.getElementById("inp-supplier-vat").value.trim(),
+        supplier_address: document.getElementById("inp-supplier-address").value.trim(),
+        tax_base: parseFloat(document.getElementById("inp-tax-base").value) || 0,
+        vat_amount: parseFloat(document.getElementById("inp-vat-amount").value) || 0,
+        total_amount: parseFloat(document.getElementById("inp-total-amount").value) || 0,
+        line_items: items,
+      };
+    }
+
     async function saveDocumentDraft() {
       if (!currentDocId) return;
       const payload = collectFormData();
@@ -1051,62 +1650,95 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        if (!resp.ok) throw new Error("Грешка при запис");
-        showToast("💾 Промените са запазени успешно!");
+        if (!resp.ok) throw new Error("Грешка при запис на промените");
+        showToast("💾 Промените са записани в базата данни!");
         fetchAuditTrail(currentDocId);
+        fetchDocumentsList();
       } catch (err) {
         showToast("Грешка: " + err.message);
       }
     }
 
-    // Approve & Dispatch Webhook
-    async function approveAndDispatchWebhook() {
-      if (!currentDocId) return;
-      await saveDocumentDraft();
+    async function approveAndExportDocument() {
+      if (!currentDocId) {
+        alert("Няма избран документ за одобрение");
+        return;
+      }
 
+      // Check math balance and EIK before approving
+      const tb = parseFloat(document.getElementById("inp-tax-base").value) || 0;
+      const vat = parseFloat(document.getElementById("inp-vat-amount").value) || 0;
+      const tot = parseFloat(document.getElementById("inp-total-amount").value) || 0;
+      const diff = Math.abs((tb + vat) - tot);
+      if (diff > 0.02) {
+        const proceed = confirm(`⚠️ Внимание: Математическият контрол по чл. 26 ЗДДС е нарушен!\n\nДанъчна основа (${tb.toFixed(2)}) + ДДС (${vat.toFixed(2)}) = ${(tb + vat).toFixed(2)}, но Общата сума е ${tot.toFixed(2)} (разлика: ${diff.toFixed(2)}).\n\nЖелаете ли все пак да одобрите и експортирате?`);
+        if (!proceed) return;
+      }
+
+      const btn = document.getElementById("btn-approve-export");
+      const origText = btn.innerText;
+      btn.disabled = true;
+      btn.innerText = "⏳ Одобряване и експорт...";
+
+      const correctionsPayload = collectFormData();
       const webhookUrl = localStorage.getItem("erp_webhook_url") || "";
+
       try {
-        const resp = await fetch(`/api/v1/documents/${currentDocId}/approve`, {
+        const resp = await fetch(`/api/v1/documents/${currentDocId}/approve-and-export`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ actor: "accountant", webhook_url: webhookUrl }),
+          body: JSON.stringify({
+            actor: "accountant",
+            webhook_url: webhookUrl || null,
+            corrections: correctionsPayload,
+          }),
         });
-        if (!resp.ok) throw new Error("Грешка при одобряване");
-        const res = await resp.json();
-        showToast("✅ Документът е одобрен и изпратен към ERP!");
+
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({}));
+          throw new Error(errData.detail || "Грешка при одобряване и експорт");
+        }
+
+        const result = await resp.json();
+        showToast("✅ Фактурата е одобрена, одитният лог е обновен и счетоводният експорт е готов!");
+
+        // Update status pill
+        const pill = document.getElementById("doc-status-pill");
+        pill.innerText = "APPROVED";
+        pill.className = "status-pill status-approved";
+
+        // Download exports automatically
+        if (result.exports) {
+          if (result.exports.pokupki && result.exports.pokupki.content) {
+            downloadTextFile(result.exports.pokupki.filename, result.exports.pokupki.content);
+          }
+          if (result.exports.journal_entries_csv && result.exports.journal_entries_csv.content) {
+            setTimeout(() => {
+              downloadTextFile(result.exports.journal_entries_csv.filename, result.exports.journal_entries_csv.content);
+            }, 300);
+          }
+        }
+
+        // Refresh audit trail and documents list
+        fetchAuditTrail(currentDocId);
         fetchDocumentsList();
-        loadSelectedDocument(currentDocId);
       } catch (err) {
-        showToast("Грешка: " + err.message);
+        showToast("❌ Грешка: " + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = origText;
       }
     }
 
-    function collectFormData() {
-      const rows = document.querySelectorAll("#items-tbody tr");
-      const items = Array.from(rows).map((tr, idx) => ({
-        index: idx + 1,
-        description: tr.children[1].querySelector("input").value,
-        quantity: parseFloat(tr.children[2].querySelector("input").value) || 1,
-        unit: "бр.",
-        unit_price_net: { amount: parseFloat(tr.children[3].querySelector("input").value) || 0, currency: "BGN" },
-        total_price_net: { amount: parseFloat(tr.children[4].querySelector("input").value) || 0, currency: "BGN" },
-        vat_rate_pct: parseFloat(tr.children[5].querySelector("input").value) || 20,
-      }));
-
-      return {
-        invoice_number: document.getElementById("inp-invoice-number").value,
-        currency: document.getElementById("inp-currency").value,
-        date_issued: document.getElementById("inp-date-issued").value,
-        date_tax_event: document.getElementById("inp-date-tax-event").value,
-        supplier_name: document.getElementById("inp-supplier-name").value,
-        supplier_eik: document.getElementById("inp-supplier-eik").value,
-        supplier_vat: document.getElementById("inp-supplier-vat").value,
-        supplier_address: document.getElementById("inp-supplier-address").value,
-        tax_base: parseFloat(document.getElementById("inp-tax-base").value) || 0,
-        vat_amount: parseFloat(document.getElementById("inp-vat-amount").value) || 0,
-        total_amount: parseFloat(document.getElementById("inp-total-amount").value) || 0,
-        line_items: items,
-      };
+    function downloadTextFile(filename, content) {
+      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(a.href);
     }
 
     async function fetchAuditTrail(docId) {
@@ -1120,22 +1752,24 @@
             const div = document.createElement("div");
             div.className = "timeline-item";
             const dateStr = item.timestamp ? new Date(item.timestamp).toLocaleTimeString("bg-BG") : "";
+            const diffHtml = (item.old_value !== null && item.new_value !== null) 
+              ? `<span class="timeline-diff">(${escapeHtml(item.old_value)} ➔ ${escapeHtml(item.new_value)})</span>` 
+              : '';
             div.innerHTML = `
               <span class="timeline-time">${dateStr}</span>
-              <span class="timeline-actor">${item.actor}:</span>
-              <span>${item.action} ${item.field_name ? `(Поле: <strong>${item.field_name}</strong>)` : ''}</span>
+              <span class="timeline-actor">${escapeHtml(item.actor)}:</span>
+              <span class="timeline-action">${escapeHtml(item.action)} ${item.field_name ? `<strong>${escapeHtml(item.field_name)}</strong>` : ''} ${diffHtml}</span>
             `;
             container.appendChild(div);
           });
         } else {
-          container.innerHTML = "<div style='font-size: 0.75rem; color: var(--text-muted);'>Няма одитни записи</div>";
+          container.innerHTML = "<div style='font-size: 0.72rem; color: var(--text-muted);'>Няма одитни записи</div>";
         }
       } catch (err) {
         console.error("Error fetching audit trail:", err);
       }
     }
 
-    // Exports
     function exportPokupkiFile() {
       if (!currentDocId) return;
       window.open(`/api/v1/documents/${currentDocId}/export/pokupki`, "_blank");
@@ -1146,7 +1780,10 @@
       window.open(`/api/v1/documents/${currentDocId}/export/journal-entries?format=universal`, "_blank");
     }
 
-    // Modals
+    // -----------------------------------------------------------------------
+    // Modals & Upload
+    // -----------------------------------------------------------------------
+
     function openUploadModal() { document.getElementById("upload-modal").classList.add("active"); }
     function closeUploadModal() { document.getElementById("upload-modal").classList.remove("active"); }
     function openSettingsModal() { document.getElementById("settings-modal").classList.add("active"); }

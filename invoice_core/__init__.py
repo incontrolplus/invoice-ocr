@@ -1,7 +1,14 @@
 """Bulgarian Invoice OCR & Document Understanding Pipeline (Core Package)."""
 from __future__ import annotations
 
-from . import constants, currency, tesseract_env, models, normalizers, ingestion, preprocessing, ocr_passes, layout, classification, extraction, table_recovery, financials, validation, cache, pipeline, batch, cli, vendor_profiles, microinvest_export, local_llm
+from . import (
+    constants, currency, tesseract_env, models, normalizers, ingestion,
+    preprocessing, ocr_passes, layout, classification, extraction,
+    table_recovery, financials, validation, cache, pipeline, batch, cli,
+    vendor_profiles, microinvest_export, local_llm, chart_of_accounts,
+    account_mapping, tax_period_validator, business_navigator_export,
+    ajur_export, worker_pool, legal_compliance,
+)
 
 from .constants import (
     ALL_COLUMN_SYNONYMS_SORTED,
@@ -552,6 +559,7 @@ from .batch import (
     as_completed,
     format_batch_console_report,
     gc,
+    iter_process_batch,
     json,
     logger,
     logging,
@@ -590,7 +598,9 @@ _SUBMODULES = [
     constants, currency, tesseract_env, models, normalizers, ingestion,
     preprocessing, ocr_passes, layout, classification, extraction,
     table_recovery, financials, validation, cache, pipeline, batch, cli,
-    vendor_profiles, microinvest_export,
+    vendor_profiles, microinvest_export, chart_of_accounts, account_mapping,
+    tax_period_validator, business_navigator_export, ajur_export, worker_pool,
+    legal_compliance,
 ]
 for _mod in _SUBMODULES:
     for _name in dir(_mod):

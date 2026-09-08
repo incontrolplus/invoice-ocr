@@ -10,7 +10,13 @@ import sys
 
 from .batch import format_batch_console_report, process_batch
 from .cache import clear_ocr_cache, get_ocr_cache_stats
-from .constants import DEFAULT_OCR_CACHE_DIR, DEFAULT_OCR_LANG, SUPPORTED_EXTENSIONS
+from .constants import (
+    DEFAULT_MAX_PAGES_PER_WORKER,
+    DEFAULT_MAX_WORKER_MEMORY_MB,
+    DEFAULT_OCR_CACHE_DIR,
+    DEFAULT_OCR_LANG,
+    SUPPORTED_EXTENSIONS,
+)
 from .pipeline import process_invoice, serialize_invoice
 from .tesseract_env import (
     TesseractLanguageMissingError,
@@ -178,6 +184,18 @@ def main() -> None:
         help="Number of worker processes for parallel batch execution (default: auto-detect all CPU cores)",
     )
     parser.add_argument(
+        "--max-pages-per-worker",
+        type=int,
+        default=DEFAULT_MAX_PAGES_PER_WORKER,
+        help=f"Recycle worker process after processing N pages (Memory Guard, default: {DEFAULT_MAX_PAGES_PER_WORKER})",
+    )
+    parser.add_argument(
+        "--max-worker-memory-mb",
+        type=float,
+        default=DEFAULT_MAX_WORKER_MEMORY_MB,
+        help=f"Maximum resident memory limit in MB per worker process (default: {DEFAULT_MAX_WORKER_MEMORY_MB})",
+    )
+    parser.add_argument(
         "--ocr-cache-dir",
         type=str,
         default=str(DEFAULT_OCR_CACHE_DIR),
@@ -251,6 +269,8 @@ def main() -> None:
                 workers=args.workers,
                 use_cache=use_cache,
                 ocr_cache_dir=ocr_cache_dir,
+                max_pages_per_worker=args.max_pages_per_worker,
+                max_worker_memory_mb=args.max_worker_memory_mb,
             )
             # Print executive summary report to stderr
             report = format_batch_console_report(summary)

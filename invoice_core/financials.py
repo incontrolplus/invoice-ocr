@@ -1118,35 +1118,52 @@ def extract_payment_details(
                 break
 
     # Derive BIC and Bank Name from validated IBAN if still missing or noisy
-    if pd.iban and len(pd.iban) == 22:
+    if pd.iban and len(pd.iban) == 22 and pd.iban.startswith("BG"):
         bank_code = pd.iban[4:8]
-        IBAN_BANK_MAP = {
-            "UBBS": ("UBBSBGSF", "Обединена българска банка АД"),
-            "BPBI": ("BPBIBGSF", "Юробанк България АД"),
-            "PRCB": ("PRCBBGSF", "ПроКредит Банк (България) ЕАД"),
-            "UNCR": ("UNCRBGSF", "УниКредит Булбанк АД"),
-            "STSA": ("STSABGSF", "Банка ДСК АД"),
-            "FINV": ("FINVBGSF", "Първа инвестиционна банка АД"),
-            "RZBB": ("RZBBBGSF", "Райфайзенбанк (България) ЕАД"),
-            "TTBB": ("TTBBBGSF", "Тексим Банк АД"),
-            "CEKO": ("CEKOBGSF", "Централна кооперативна банка АД"),
-            "BUIN": ("BUINBGSF", "Инвестбанк АД"),
-            "BACX": ("BACXBGSF", "Българо-американска кредитна банка АД"),
-            "IORT": ("IORTBGSF", "Интернешънъл Асет Банк АД"),
-            "BNBG": ("BNBGBGSF", "Българска народна банка"),
-        }
-        if bank_code in IBAN_BANK_MAP:
-            mapped_bic, mapped_name = IBAN_BANK_MAP[bank_code]
+        pd.bank_code = bank_code
+        pd.is_iban_valid = validate_iban_modulo97(pd.iban)
+
+        try:
+            from .legal_compliance import find_bank_by_code
+            bank_info = find_bank_by_code(bank_code)
+        except Exception:
+            bank_info = None
+
+        if bank_info:
+            pd.bank_recognized = True
             if not pd.bic:
-                pd.bic = mapped_bic
+                pd.bic = bank_info.bic
             if not pd.bank_name or len(pd.bank_name) < 4 or any(bad in pd.bank_name for bad in ("ЕГН", "BAT", "Състави", "Място")):
-                pd.bank_name = mapped_name
+                pd.bank_name = bank_info.name
+        else:
+            IBAN_BANK_MAP = {
+                "UBBS": ("UBBSBGSF", "Обединена българска банка АД"),
+                "BPBI": ("BPBIBGSF", "Юробанк България АД"),
+                "PRCB": ("PRCBBGSF", "ПроКредит Банк (България) ЕАД"),
+                "UNCR": ("UNCRBGSF", "УниКредит Булбанк АД"),
+                "STSA": ("STSABGSF", "Банка ДСК АД"),
+                "FINV": ("FINVBGSF", "Първа инвестиционна банка АД"),
+                "RZBB": ("RZBBBGSF", "Райфайзенбанк (България) ЕАД"),
+                "TTBB": ("TTBBBGSF", "Тексим Банк АД"),
+                "CEKO": ("CEKOBGSF", "Централна кооперативна банка АД"),
+                "BUIN": ("BUINBGSF", "Инвестбанк АД"),
+                "BACX": ("BACXBGSF", "Българо-американска кредитна банка АД"),
+                "IORT": ("IORTBGSF", "Интернешънъл Асет Банк АД"),
+                "BNBG": ("BNBGBGSF", "Българска народна банка"),
+            }
+            if bank_code in IBAN_BANK_MAP:
+                mapped_bic, mapped_name = IBAN_BANK_MAP[bank_code]
+                pd.bank_recognized = True
+                if not pd.bic:
+                    pd.bic = mapped_bic
+                if not pd.bank_name or len(pd.bank_name) < 4 or any(bad in pd.bank_name for bad in ("ЕГН", "BAT", "Състави", "Място")):
+                    pd.bank_name = mapped_name
 
     # Payment method
     method_patterns = [
         (r'(?i)(?:по\s*)?банков\s*(?:път|превод)', "банков превод"),
         (r'(?i)в\s*брой', "в брой"),
-        (r'(?i)(?:payment|плащане)\s*[:./-]?\s*(.*)', None),
+        (r'(?i)(?:payment|плащане|начин\s+на\s+плащане)\s*[:./-]?\s*([^\n;,|]{2,40})', None),
     ]
     for pattern, default_method in method_patterns:
         m = re.search(pattern, full_text)

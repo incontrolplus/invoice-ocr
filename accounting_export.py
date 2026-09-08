@@ -1292,7 +1292,22 @@ def export_all_accounting_files(
     json_file.write_text(json_entries, encoding="utf-8")
     exported_files["journal_entries_json"] = str(json_file)
 
-    # 6. Full NAP VAT Package (PRODAGBI.TXT, DEKLAR.TXT, and ZIP)
+    # 6. Business Navigator ERP Package (CSV, TXT, DOKUM.DBF, OPER.DBF)
+    bn_pkg = export_business_navigator_package(inv_list, output_dir=out_path, create_zip=True)
+    for k, v in bn_pkg.items():
+        exported_files[f"bn_{k}"] = v
+
+    # 7. Ajur ERP Package (CSV)
+    ajur_pkg = export_ajur_package(inv_list, output_dir=out_path, create_zip=False)
+    for k, v in ajur_pkg.items():
+        exported_files[f"ajur_{k}"] = v
+
+    # 8. Microinvest Complete Package (Delta XML, Sklad XML, Delta CSV)
+    micro_pkg = export_microinvest_package(inv_list, output_dir=out_path, create_zip=False)
+    for k, v in micro_pkg.items():
+        exported_files[f"microinvest_{k}"] = v
+
+    # 9. Full NAP VAT Package (PRODAGBI.TXT, DEKLAR.TXT, and ZIP)
     nap_pkg = export_nap_package(
         purchase_invoices=inv_list,
         output_dir=out_path,
@@ -2433,10 +2448,50 @@ def export_nap_package(
 
 
 # ---------------------------------------------------------------------------
-# Microinvest ERP Integration (Sklad Pro & Delta Pro TransferData XML)
+# Deep Bulgarian Accounting Integration (Microinvest, Business Navigator, Ajur)
 # ---------------------------------------------------------------------------
+from invoice_core.chart_of_accounts import (
+    AccountDefinition,
+    AccountType,
+    AccountClass,
+    ChartOfAccountsCatalog,
+    DEFAULT_CHART_OF_ACCOUNTS,
+    lookup_account,
+    search_accounts,
+    explain_account,
+)
+from invoice_core.account_mapping import (
+    AccountMappingRule,
+    SupplierMappingRule,
+    AccountMappingEngine,
+    DEFAULT_MAPPING_ENGINE,
+    classify_invoice_account,
+    split_invoice_postings,
+)
+from invoice_core.tax_period_validator import (
+    TaxPeriodStatus,
+    TaxPeriodValidationResult,
+    TaxPeriodValidator,
+    validate_tax_period,
+    parse_target_vat_period,
+)
+from invoice_core.business_navigator_export import (
+    DBFField,
+    SimpleDBFWriter,
+    SimpleDBFReader,
+    generate_business_navigator_csv,
+    generate_business_navigator_section_txt,
+    generate_business_navigator_dbf_tables,
+    generate_business_navigator_single_dbf,
+    export_business_navigator_package,
+)
+from invoice_core.ajur_export import (
+    generate_ajur_csv,
+    export_ajur_package,
+)
 from invoice_core.microinvest_export import (
     generate_microinvest_sklad_xml,
     generate_microinvest_delta_xml,
+    generate_microinvest_delta_csv,
     export_microinvest_package,
 )

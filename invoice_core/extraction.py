@@ -1447,3 +1447,18 @@ def _union_bbox(b1: tuple[int, int, int, int], b2: tuple[int, int, int, int]) ->
     y2 = max(b1[1] + b1[3], b2[1] + b2[3])
     return (x1, y1, x2 - x1, y2 - y1)
 
+
+def extract_signatories(
+    lines: list[LogicalLine],
+    tokens: list[OcrToken],
+    supplier: Party | None = None,
+    recipient: Party | None = None,
+) -> tuple[str | None, str | None]:
+    """Extract compiler (съставител / издал / предал) and recipient (получил / приел).
+    
+    Returns (compiled_by, received_by).
+    """
+    text_corpus = " ".join(t.text for t in tokens)
+    from .legal_compliance import extract_signatories_from_text
+    return extract_signatories_from_text(text_corpus, lines=lines)
+

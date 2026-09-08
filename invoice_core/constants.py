@@ -40,6 +40,11 @@ DEFAULT_OCR_CACHE_DIR: Path = Path(".ocr_cache")
 # OCR confidence threshold — tokens below this are kept but flagged
 MIN_CONFIDENCE: int = 60
 
+# Worker Pool & Memory Guard defaults (configurable via environment variables)
+DEFAULT_MAX_OCR_WORKERS: int = int(os.environ.get("MAX_OCR_WORKERS", str(min(os.cpu_count() or 4, 16))))
+DEFAULT_MAX_PAGES_PER_WORKER: int = int(os.environ.get("MAX_PAGES_PER_WORKER", os.environ.get("OCR_MAX_PAGES_PER_WORKER", "50")))
+DEFAULT_MAX_WORKER_MEMORY_MB: float = float(os.environ.get("MAX_WORKER_MEMORY_MB", os.environ.get("OCR_WORKER_MAX_MEMORY_MB", "512.0")))
+
 BULGARIAN_KEYWORDS: set[str] = {
     "фактура", "доставчик", "получател", "еик", "ддс", "данъчна", "основа",
     "стойност", "сума", "общо", "бг", "банка", "ибан", "лева", "лв", "евро",

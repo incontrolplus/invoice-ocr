@@ -43,6 +43,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:$PATH" \
     PORT=8000 \
     OMP_THREAD_LIMIT=1 \
+    MAX_OCR_WORKERS=2 \
     DATABASE_URL=sqlite:////data/invoice_ocr.db \
     STORAGE_DIR=/data/stored_documents
 
@@ -95,6 +96,9 @@ COPY --chown=appuser:appgroup contractor_verification.py .
 COPY --chown=appuser:appgroup database.py .
 COPY --chown=appuser:appgroup webhooks.py .
 COPY --chown=appuser:appgroup api_server.py .
+COPY --chown=appuser:appgroup invoice_core/ ./invoice_core/
+COPY --chown=appuser:appgroup config/ ./config/
+COPY --chown=appuser:appgroup vendor_profiles/ ./vendor_profiles/
 COPY --chown=appuser:appgroup static/ ./static/
 COPY --chown=appuser:appgroup tessdata/ ./tessdata/
 
@@ -112,4 +116,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Launch production microservice
-CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

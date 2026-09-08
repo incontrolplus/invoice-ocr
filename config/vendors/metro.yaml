@@ -1,0 +1,34 @@
+# Metro Cash & Carry Bulgaria EOOD Profile
+id: metro
+name: "МЕТРО КЕШ ЕНД КЕРИ БЪЛГАРИЯ ЕООД"
+eik: "121644736"
+alternate_eiks:
+  - "121644734"
+vat: "BG121644736"
+address: "гр. София 1784, бул. Цариградско шосе 7-11 км"
+keywords:
+  - "metro"
+  - "метро"
+  - "кеш енд кери"
+table_anchors:
+  - "код"
+  - "артикул"
+  - "наименование"
+  - "количество"
+  - "мярка"
+  - "ед.цена"
+  - "стойност"
+  - "ддс"
+column_offsets:
+  code: [0.0, 0.15]
+  description: [0.15, 0.52]
+  quantity: [0.52, 0.65]
+  unit_price: [0.65, 0.80]
+  total: [0.80, 1.0]
+fused_patterns:
+  - "121644736"
+  - "121644734"
+dot_matrix: false
+layout:
+  customer_box: true
+  recapitulation_table: true

@@ -1,0 +1,30 @@
+# Fallback Banking Profiles for Frequent Bulgarian Counterparties
+banking_profiles:
+  - keywords: ["анда", "анко петров"]
+    iban: "BG69UBBS80021086890030"
+    bic: "UBBSBGSF"
+    bank_name: "Обединена българска банка АД"
+  - keywords: ["капина"]
+    iban: "BG13BPBI81701060091301"
+    bic: "BPBIBGSF"
+    bank_name: "Юробанк България АД"
+  - keywords: ["оскари"]
+    iban: "BG86PRCB92301000593422"
+    bic: "PRCBBGSF"
+    bank_name: "ПроКредит Банк (България) ЕАД"
+  - keywords: ["грестокомерс"]
+    iban: "BG39UNCR70001500876294"
+    bic: "UNCRBGSF"
+    bank_name: "УниКредит Булбанк АД"
+  - keywords: ["теменужка"]
+    iban: "BG57UNCR70001523788049"
+    bic: "UNCRBGSF"
+    bank_name: "УниКредит Булбанк АД"
+  - keywords: ["елико"]
+    iban: "BG65UBBS80021071504350"
+    bic: "UBBSBGSF"
+    bank_name: "Обединена българска банка АД"
+  - keywords: ["валборген"]
+    iban: "BG10STSA93000027446545"
+    bic: "STSABGSF"
+    bank_name: "Банка ДСК АД"

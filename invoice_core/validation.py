@@ -19,6 +19,7 @@ from .constants import (
 )
 from .currency import convert_eur_to_bgn, verify_dual_currency_parity
 from .financials import _detect_all_currencies
+from .legal_compliance import audit_legal_compliance
 from .models import DocumentType, Invoice, MoneyAmount, OcrToken, ValidationIssue, ValidationResult
 from .normalizers import is_valid_eik9, is_valid_eik13, sanitize_vat_rate, validate_eik, validate_iban_modulo97
 from .vendor_profiles import get_recapitulation_eiks
@@ -54,6 +55,14 @@ def _validate_required_fields(invoice: Invoice) -> list[ValidationIssue]:
             message="Supplier name was not detected",
             severity="error",
             field="supplier.name",
+        ))
+
+    if not invoice.supplier.eik:
+        issues.append(ValidationIssue(
+            code="MISSING_SUPPLIER_EIK",
+            message="Supplier EIK/BULSTAT was not detected (Art. 114(1)(2) VAT Act / ЗДДС)",
+            severity="error",
+            field="supplier.eik",
         ))
 
     if not invoice.recipient.name:
@@ -780,6 +789,12 @@ def validate_invoice(
     all_issues.extend(_validate_amount_in_words(invoice))
     all_issues.extend(_validate_ocr_confidence(invoice, tokens))
 
+    # Statutory Legal & Tax Compliance Audit (ЗСч чл. 6 & 7, ЗДДС чл. 114)
+    legal_report, legal_issues = audit_legal_compliance(invoice, tokens=tokens)
+    result.legal_compliance_report = legal_report
+    invoice.legal_compliance_report = legal_report
+    all_issues.extend(legal_issues)
+
     if verify_contractors:
         all_issues.extend(validate_contractor_eligibility(invoice, verifier=contractor_verifier))
 
@@ -790,5 +805,6 @@ def validate_invoice(
             result.warnings.append(issue)
 
     result.is_valid = len(result.errors) == 0
+    invoice.validation = result
     return result
 

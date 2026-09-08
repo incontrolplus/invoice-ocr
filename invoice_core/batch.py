@@ -10,12 +10,20 @@ import os
 from pathlib import Path
 import sys
 import time
-from typing import Any
+from typing import Any, Generator, Sequence
 
-from .constants import DEFAULT_OCR_CACHE_DIR, DEFAULT_OCR_LANG, SUPPORTED_EXTENSIONS
+from .constants import (
+    DEFAULT_MAX_OCR_WORKERS,
+    DEFAULT_MAX_PAGES_PER_WORKER,
+    DEFAULT_MAX_WORKER_MEMORY_MB,
+    DEFAULT_OCR_CACHE_DIR,
+    DEFAULT_OCR_LANG,
+    SUPPORTED_EXTENSIONS,
+)
 from .models import Invoice
 from .pipeline import process_invoice, serialize_invoice
 from .tesseract_env import setup_tessdata_prefix
+from .worker_pool import OCRProcessPoolExecutor, get_open_fd_count, get_process_rss_mb
 
 logger = logging.getLogger("invoice_ocr")
 
@@ -123,9 +131,13 @@ def format_batch_console_report(summary: dict[str, Any]) -> str:
 
 def _process_batch_file_worker(args: dict[str, Any]) -> dict[str, Any]:
     """Worker function executed in child processes for parallel batch processing."""
-    # Prevent OpenMP thread thrashing across parallel worker processes
+    # Prevent OpenMP and thread thrashing across parallel worker processes
     os.environ["OMP_THREAD_LIMIT"] = "1"
     os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
     file_path = Path(args["file_path"])
     rel_path = args["rel_path"]
@@ -136,6 +148,8 @@ def _process_batch_file_worker(args: dict[str, Any]) -> dict[str, Any]:
     use_cache = args.get("use_cache", True)
     ocr_cache_dir = args.get("ocr_cache_dir")
     file_idx = args.get("file_idx", 0)
+    max_memory_mb = args.get("max_memory_mb", DEFAULT_MAX_WORKER_MEMORY_MB)
+    return_invoice_object = args.get("return_invoice_object", True)
 
     file_start = time.perf_counter()
     try:
@@ -149,10 +163,21 @@ def _process_batch_file_worker(args: dict[str, Any]) -> dict[str, Any]:
         )
         file_duration = time.perf_counter() - file_start
 
+        # Count pages
+        doc_pages = 1
+        if invoice and invoice.raw_ocr_evidence:
+            doc_pages = int(invoice.raw_ocr_evidence.get("total_pages", 1))
+
         # Serialize and write JSON output directly in worker
         json_output = serialize_invoice(invoice)
         out_file = out_dir / f"{file_path.stem}.json"
         out_file.write_text(json_output, encoding="utf-8")
+
+        # Explicit garbage collection inside worker
+        gc.collect()
+
+        end_rss = get_process_rss_mb()
+        memory_exceeded = end_rss > max_memory_mb
 
         return {
             "file_idx": file_idx,
@@ -160,12 +185,18 @@ def _process_batch_file_worker(args: dict[str, Any]) -> dict[str, Any]:
             "relative_path": rel_path,
             "output_file": str(out_file),
             "status": "success",
-            "invoice": invoice,
+            "invoice": invoice if return_invoice_object else None,
+            "pages": doc_pages,
+            "worker_pid": os.getpid(),
+            "memory_rss_mb": round(end_rss, 2),
+            "memory_guard_triggered": memory_exceeded,
             "duration_seconds": round(file_duration, 3),
             "error": None,
         }
     except Exception as exc:
+        gc.collect()
         file_duration = time.perf_counter() - file_start
+        end_rss = get_process_rss_mb()
         logger.error("Failed processing %s: %s", rel_path, exc)
         return {
             "file_idx": file_idx,
@@ -174,9 +205,112 @@ def _process_batch_file_worker(args: dict[str, Any]) -> dict[str, Any]:
             "output_file": None,
             "status": "error",
             "invoice": None,
+            "pages": 0,
+            "worker_pid": os.getpid(),
+            "memory_rss_mb": round(end_rss, 2),
+            "memory_guard_triggered": end_rss > max_memory_mb,
             "duration_seconds": round(file_duration, 3),
             "error": str(exc),
         }
+
+
+def iter_process_batch(
+    input_dir: Path | str,
+    output_dir: Path | str = "results/",
+    debug_dir: Path | str | None = None,
+    lang: str = DEFAULT_OCR_LANG,
+    tessdata_dir: Path | str | None = None,
+    workers: int | None = None,
+    use_cache: bool = True,
+    ocr_cache_dir: Path | str | None = DEFAULT_OCR_CACHE_DIR,
+    max_pages_per_worker: int | None = None,
+    max_worker_memory_mb: float | None = None,
+    return_invoice_object: bool = True,
+    progress_callback: Any = None,
+    quiet: bool = True,
+) -> Generator[dict[str, Any], None, None]:
+    """Stream processing of a directory of invoices yielding document results on-the-fly.
+    
+    Operates with constant O(1) memory by sliding tasks across isolated worker
+    processes without loading all document results into RAM.
+    """
+    in_dir = Path(input_dir).resolve()
+    out_dir = Path(output_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if debug_dir:
+        Path(debug_dir).mkdir(parents=True, exist_ok=True)
+
+    if not in_dir.exists():
+        raise FileNotFoundError(f"Input directory does not exist: {in_dir}")
+
+    files: list[Path] = []
+    for p in sorted(in_dir.rglob("*")):
+        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS:
+            files.append(p)
+
+    if not quiet:
+        logger.info("Found %d documents to stream process in %s", len(files), in_dir)
+
+    worker_args_list = [
+        {
+            "file_idx": i,
+            "file_path": str(fp),
+            "rel_path": str(fp.relative_to(in_dir)),
+            "out_dir": str(out_dir),
+            "debug_dir": str(debug_dir) if debug_dir else None,
+            "lang": lang,
+            "tessdata_dir": str(tessdata_dir) if tessdata_dir else None,
+            "use_cache": use_cache,
+            "ocr_cache_dir": str(ocr_cache_dir) if ocr_cache_dir else None,
+            "return_invoice_object": return_invoice_object,
+            "max_memory_mb": max_worker_memory_mb or DEFAULT_MAX_WORKER_MEMORY_MB,
+            "max_pages_per_worker": max_pages_per_worker or DEFAULT_MAX_PAGES_PER_WORKER,
+        }
+        for i, fp in enumerate(files)
+    ]
+
+    effective_workers = workers if (workers and workers > 0) else DEFAULT_MAX_OCR_WORKERS
+
+    if len(files) == 0:
+        return
+
+    if effective_workers == 1 or len(files) <= 1:
+        # Sequential execution
+        for i, wargs in enumerate(worker_args_list):
+            res = _process_batch_file_worker(wargs)
+            if progress_callback:
+                progress_callback(i + 1, len(files), res.get("file", ""))
+            if not quiet:
+                logger.info(
+                    "[%d/%d] Processed %s in %.2fs (%s)",
+                    i + 1, len(files), res["relative_path"], res["duration_seconds"], res["status"],
+                )
+            yield res
+            gc.collect()
+    else:
+        # Parallel execution with sliding window over isolated OCRProcessPoolExecutor
+        max_pool_workers = min(effective_workers, len(files))
+        if not quiet:
+            logger.info("Executing batch processing across %d worker processes...", max_pool_workers)
+        with OCRProcessPoolExecutor(
+            max_workers=max_pool_workers,
+            max_pages_per_worker=max_pages_per_worker or DEFAULT_MAX_PAGES_PER_WORKER,
+            max_memory_mb=max_worker_memory_mb or DEFAULT_MAX_WORKER_MEMORY_MB,
+        ) as executor:
+            completed_count = 0
+            for res in executor.stream_batch(
+                worker_args_list,
+                window_size=max(4, max_pool_workers * 2),
+                progress_callback=progress_callback,
+                total_items=len(files),
+            ):
+                completed_count += 1
+                if not quiet:
+                    logger.info(
+                        "[%d/%d] Processed %s in %.2fs (%s)",
+                        completed_count, len(files), res["relative_path"], res["duration_seconds"], res["status"],
+                    )
+                yield res
 
 
 def process_batch(
@@ -205,6 +339,8 @@ def process_batch(
     workers: int | None = None,
     use_cache: bool = True,
     ocr_cache_dir: Path | str | None = DEFAULT_OCR_CACHE_DIR,
+    max_pages_per_worker: int | None = None,
+    max_worker_memory_mb: float | None = None,
     progress_callback: Any = None,
 ) -> dict[str, Any]:
     """Process an entire directory of invoices and produce an accounting batch summary."""
@@ -240,63 +376,30 @@ def process_batch(
     if not quiet:
         logger.info("Found %d documents to process in %s", len(files), in_dir)
 
-    worker_args_list = [
-        {
-            "file_idx": i,
-            "file_path": str(fp),
-            "rel_path": str(fp.relative_to(in_dir)),
-            "out_dir": str(out_dir),
-            "debug_dir": str(debug_dir) if debug_dir else None,
-            "lang": lang,
-            "tessdata_dir": str(tessdata_dir) if tessdata_dir else None,
-            "use_cache": use_cache,
-            "ocr_cache_dir": str(ocr_cache_dir) if ocr_cache_dir else None,
-        }
-        for i, fp in enumerate(files)
-    ]
-
     effective_workers = workers
     if effective_workers is None or effective_workers <= 0:
-        effective_workers = min(os.cpu_count() or 4, 16)
+        effective_workers = DEFAULT_MAX_OCR_WORKERS
 
     ordered_results: list[dict[str, Any]] = [None] * len(files)  # type: ignore
 
     if len(files) > 0:
-        if effective_workers == 1 or len(files) <= 1:
-            # Sequential execution
-            for i, wargs in enumerate(worker_args_list):
-                res = _process_batch_file_worker(wargs)
-                ordered_results[i] = res
-                if progress_callback:
-                    progress_callback(i + 1, len(files), res["file"])
-                if not quiet:
-                    logger.info(
-                        "[%d/%d] Processed %s in %.2fs (%s)",
-                        i + 1, len(files), res["relative_path"], res["duration_seconds"], res["status"],
-                    )
-        else:
-            # Parallel execution via ProcessPoolExecutor
-            max_pool_workers = min(effective_workers, len(files))
-            if not quiet:
-                logger.info("Executing batch processing across %d worker processes...", max_pool_workers)
-            with ProcessPoolExecutor(max_workers=max_pool_workers) as executor:
-                future_map = {
-                    executor.submit(_process_batch_file_worker, wargs): wargs["file_idx"]
-                    for wargs in worker_args_list
-                }
-                completed_count = 0
-                for future in as_completed(future_map):
-                    res = future.result()
-                    f_idx = res["file_idx"]
-                    ordered_results[f_idx] = res
-                    completed_count += 1
-                    if progress_callback:
-                        progress_callback(completed_count, len(files), res["file"])
-                    if not quiet:
-                        logger.info(
-                            "[%d/%d] Processed %s in %.2fs (%s)",
-                            completed_count, len(files), res["relative_path"], res["duration_seconds"], res["status"],
-                        )
+        for res in iter_process_batch(
+            input_dir=in_dir,
+            output_dir=out_dir,
+            debug_dir=debug_dir,
+            lang=lang,
+            tessdata_dir=tessdata_dir,
+            workers=effective_workers,
+            use_cache=use_cache,
+            ocr_cache_dir=ocr_cache_dir,
+            max_pages_per_worker=max_pages_per_worker,
+            max_worker_memory_mb=max_worker_memory_mb,
+            return_invoice_object=True,
+            progress_callback=progress_callback,
+            quiet=quiet,
+        ):
+            f_idx = res.get("file_idx", 0)
+            ordered_results[f_idx] = res
 
     for res in ordered_results:
         if res is None:

@@ -45,6 +45,7 @@ from .extraction import (
     extract_invoice_number,
     extract_party,
     extract_place_issued,
+    extract_signatories,
 )
 from .financials import (
     calculate_ocr_confidence,
@@ -118,6 +119,13 @@ def serialize_invoice(invoice: Invoice) -> str:
         "goods_receipt": raw.get("goods_receipt"),
     }
     raw["validation_results"] = raw.get("validation")
+    legal_rep = raw.get("legal_compliance_report") or (
+        raw.get("validation", {}).get("legal_compliance_report") if isinstance(raw.get("validation"), dict) else None
+    )
+    if legal_rep is not None:
+        raw["legal_compliance_report"] = legal_rep
+        if isinstance(raw.get("validation_results"), dict) and raw["validation_results"].get("legal_compliance_report") is None:
+            raw["validation_results"]["legal_compliance_report"] = legal_rep
     return json.dumps(
         raw,
         cls=_InvoiceEncoder,
@@ -322,6 +330,11 @@ def _extract_and_validate_from_tokens(
     # Parties
     invoice.supplier = extract_party(lines, tokens, "supplier")
     invoice.recipient = extract_party(lines, tokens, "recipient")
+
+    # Signatories & Compiler (ЗСч чл. 6, ал. 1, т. 5)
+    comp_by, recv_by = extract_signatories(lines, tokens, supplier=invoice.supplier, recipient=invoice.recipient)
+    invoice.invoice_metadata.compiled_by = comp_by
+    invoice.invoice_metadata.received_by = recv_by
 
     # Post-party invoice number reconciliation:
     # Ensure invoice number was not accidentally resolved to supplier/recipient EIK or VAT

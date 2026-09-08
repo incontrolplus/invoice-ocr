@@ -578,13 +578,114 @@ def add_audit_entry(
     return entry
 
 
+def revalidate_invoice_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Reconstruct an Invoice model from data dict and run full validation suite."""
+    from dataclasses import asdict
+    from decimal import Decimal
+    from invoice_core.models import (
+        DocumentType,
+        FinancialSummary,
+        Invoice,
+        InvoiceMetadata,
+        LineItem,
+        MoneyAmount,
+        Party,
+        PaymentDetails,
+    )
+    from invoice_core.validation import validate_invoice
+
+    norm = data.get("normalized_data") or data
+    meta_d = norm.get("invoice_metadata", {})
+    sup_d = norm.get("supplier", {})
+    rec_d = norm.get("recipient", {})
+    fin_d = norm.get("financial_summary", {})
+    pay_d = norm.get("payment_details", {})
+    items_d = norm.get("line_items", [])
+
+    def _to_money(val: Any) -> MoneyAmount:
+        if isinstance(val, MoneyAmount):
+            return val
+        if isinstance(val, dict):
+            amt = val.get("amount")
+            curr = val.get("currency")
+            return MoneyAmount(amount=Decimal(str(amt)) if amt is not None else None, currency=curr)
+        if val is not None:
+            return MoneyAmount(amount=Decimal(str(val)), currency=None)
+        return MoneyAmount(amount=None, currency=None)
+
+    meta = InvoiceMetadata(
+        invoice_number=meta_d.get("invoice_number"),
+        date_issued=meta_d.get("date_issued"),
+        date_tax_event=meta_d.get("date_tax_event"),
+        due_date=meta_d.get("due_date"),
+        place_issued=meta_d.get("place_issued"),
+        document_type=meta_d.get("document_type", DocumentType.INVOICE.value),
+        is_credit_note=bool(meta_d.get("is_credit_note", False)),
+        is_debit_note=bool(meta_d.get("is_debit_note", False)),
+    )
+    supplier = Party(
+        name=sup_d.get("name"),
+        eik=sup_d.get("eik"),
+        vat_number=sup_d.get("vat_number"),
+        address=sup_d.get("address"),
+        mol=sup_d.get("mol"),
+    )
+    recipient = Party(
+        name=rec_d.get("name"),
+        eik=rec_d.get("eik"),
+        vat_number=rec_d.get("vat_number"),
+        address=rec_d.get("address"),
+        mol=rec_d.get("mol"),
+    )
+    line_items = []
+    for idx, item in enumerate(items_d, 1):
+        if isinstance(item, dict):
+            line_items.append(LineItem(
+                index=item.get("index", idx),
+                description=item.get("description"),
+                unit=item.get("unit"),
+                quantity=Decimal(str(item["quantity"])) if item.get("quantity") is not None else None,
+                unit_price_net=_to_money(item.get("unit_price_net")),
+                total_price_net=_to_money(item.get("total_price_net")),
+                vat_rate_pct=Decimal(str(item["vat_rate_pct"])) if item.get("vat_rate_pct") is not None else None,
+                article_code=item.get("article_code"),
+            ))
+
+    fin = FinancialSummary(
+        tax_base=_to_money(fin_d.get("tax_base")),
+        vat_amount=_to_money(fin_d.get("vat_amount")),
+        total_amount_due=_to_money(fin_d.get("total_amount_due")),
+        total_amount_words=fin_d.get("total_amount_words"),
+        total_amount_bgn=_to_money(fin_d.get("total_amount_bgn")),
+        total_amount_eur=_to_money(fin_d.get("total_amount_eur")),
+        dual_display_total=_to_money(fin_d.get("dual_display_total")),
+    )
+    payment = PaymentDetails(
+        method=pay_d.get("method"),
+        bank_name=pay_d.get("bank_name"),
+        iban=pay_d.get("iban"),
+        bic=pay_d.get("bic"),
+        due_date=pay_d.get("due_date"),
+    )
+    inv = Invoice(
+        invoice_metadata=meta,
+        supplier=supplier,
+        recipient=recipient,
+        line_items=line_items,
+        financial_summary=fin,
+        payment_details=payment,
+    )
+    val_res = validate_invoice(inv, tokens=[])
+    return json.loads(json.dumps(asdict(val_res), default=str))
+
+
 def update_document_corrections(
     db: Session,
     doc_id: str,
     corrections: dict[str, Any],
     actor: str = "accountant",
 ) -> Optional[DocumentRecord]:
-    """Apply manual field edits to an invoice document and log audit diff."""
+    """Apply manual field edits to an invoice document, re-evaluate validation, and log audit diff."""
     record = db.query(DocumentRecord).filter(DocumentRecord.id == doc_id).first()
     if not record:
         return None
@@ -624,6 +725,10 @@ def update_document_corrections(
     if "supplier_vat" in corrections and corrections["supplier_vat"] != record.supplier_vat:
         diffs.append({"field": "supplier_vat", "old": record.supplier_vat, "new": corrections["supplier_vat"]})
         record.supplier_vat = corrections["supplier_vat"]
+
+    if "supplier_address" in corrections and corrections["supplier_address"] != record.supplier_address:
+        diffs.append({"field": "supplier_address", "old": record.supplier_address, "new": corrections["supplier_address"]})
+        record.supplier_address = corrections["supplier_address"]
 
     # Recipient
     if "recipient_name" in corrections and corrections["recipient_name"] != record.recipient_name:
@@ -691,6 +796,8 @@ def update_document_corrections(
         norm["supplier"]["eik"] = record.supplier_eik
     if record.supplier_vat:
         norm["supplier"]["vat_number"] = record.supplier_vat
+    if record.supplier_address:
+        norm["supplier"]["address"] = record.supplier_address
 
     if record.recipient_name:
         norm["recipient"]["name"] = record.recipient_name
@@ -709,7 +816,20 @@ def update_document_corrections(
         diffs.append({"field": "line_items", "old": "...", "new": f"{len(corrections['line_items'])} items"})
         norm["line_items"] = corrections["line_items"]
 
-    record.corrected_data_json = json.dumps(merged_data, ensure_ascii=False)
+    # Re-evaluate statutory validation with corrected data
+    try:
+        val_dict = revalidate_invoice_data(merged_data)
+        merged_data["validation_results"] = val_dict
+        merged_data["validation"] = val_dict
+        record.is_valid = bool(val_dict.get("is_valid", True))
+        record.error_count = len(val_dict.get("errors", []))
+        record.warning_count = len(val_dict.get("warnings", []))
+        if record.status != "approved":
+            record.status = "completed" if (record.is_valid and record.error_count == 0) else "needs_review"
+    except Exception as exc:
+        logger.warning("Re-validation of corrected document %s failed: %s", doc_id, exc)
+
+    record.corrected_data_json = json.dumps(merged_data, ensure_ascii=False, default=str)
     record.updated_at = datetime.now(timezone.utc)
 
     # Save audit logs for all diffs

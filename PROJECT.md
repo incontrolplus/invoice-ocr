@@ -78,6 +78,7 @@
 | 63 | Outbound ERP Webhook Architecture & Notification Dispatcher | Event-driven webhook notifications (`invoice.processed`, `invoice.approved`, `batch.completed`) with ready-made double-entry journal entries (контировки: Д-т 304/602, Д-т 4531, К-т 401), statutory НАП POKUPKI records, HMAC-SHA256 signatures (`X-Webhook-Signature`), and exponential backoff retries | M14 | Pillar 4 (P1) |
 | 64 | Human-in-the-Loop (HITL) Web Dashboard | Standalone split-screen web application: left panel with high-resolution PDF/image rendering and interactive HTML5 Canvas bounding boxes (color-coded by confidence: green, yellow, red); right panel with editable fields, live double-entry accounting balance recalculator (Debit == Credit check), audit drawer, and 1-click approval | M14 | Pillar 4 (P1) |
 | 65 | Production Multi-Stage Docker Containerization & Compose Stack | Optimized multi-stage `Dockerfile` with compiled Tesseract 5, Bulgarian/English models (`bul`, `eng`, `osd`), OpenCV headless runtime libraries, unprivileged user `appuser`, healthcheck, and `docker-compose.yml` with PostgreSQL 16 persistence | M14 | Pillar 4 (P1) |
+| 66 | Worker Pool, Memory Guard & Streaming Batch Pipeline | Dedicated isolated `OCRProcessPoolExecutor` decoupled from FastAPI async event loop; automatic worker recycling after `MAX_PAGES_PER_WORKER` tasks to eliminate native C-lib memory leaks (OpenCV, PyMuPDF, Leptonica); RSS Memory Guard threshold (`MAX_WORKER_MEMORY_MB`); NDJSON sliding-window streaming (`/api/v1/invoices/batch/stream` and `iter_process_batch`) for O(1) RAM usage; verified 4.09x speedup on 50-document benchmark with 0 FD leaks and 0 memory drift | M15 | Goal 4 (P2) |
 
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
@@ -97,6 +98,7 @@
 | M12 | Pillar 5: Multiprocessing, Token Caching & Async Task Queue | Multi-core batch execution via `ProcessPoolExecutor`, SHA-256 token caching (`.ocr_cache/`) yielding 23x+ speedup, thread-safe asynchronous REST API job queue with progress callbacks and status lifecycle (Features 54, 55, 56) | M6, M8 | DONE |
 | M13 | Pillar 3 (P1): Full NAP VAT Cycle & Online Contractor Verification | Real-time contractor verification (Commercial Register, NRA VAT Register Art. 94, EU VIES, SQLite cache); Art. 117 protocols for Reverse Charge/ВОП with dual-ledger reflection; full statutory NAP export package (POKUPKI.TXT, PRODAGBI.TXT, DEKLAR.TXT, ZIP) (Features 57, 58, 59) | M11, M12 | DONE |
 | M14 | Pillar 4 (P1): Persistent Database, Webhook Architecture & HITL Interface | Persistent SQLAlchemy models (`DocumentRecord`, `AuditTrailRecord`, `PersistentJobRecord`), automated ERP webhook dispatcher with double-entry journal entries and HMAC-SHA256 signing, split-screen Human-in-the-Loop web dashboard (`/dashboard`) with HTML5 Canvas bounding boxes and real-time accounting balance recalculator, multi-stage production Dockerfile & docker-compose stack (Features 60-65) | M8, M11, M12, M13 | DONE |
+| M15 | Pillar 5 (P2): Worker Pool, Memory Guard & Batch Streaming | Dedicated isolated `OCRProcessPoolExecutor` with thread-safe singleton, non-blocking asyncio bridge (`submit_ocr_async`), process lifecycle recycling (`max_tasks_per_child`), memory guard threshold, NDJSON streaming endpoints (`/api/v1/invoices/batch/stream`, `/api/v1/invoices/batch-dir/stream`), CLI flags (`--max-pages-per-worker`, `--max-worker-memory-mb`), and 50-doc benchmark achieving 4.09x speedup with zero FD leaks (Feature 66) | M8, M12 | DONE |
 
 ## Interface Contracts
 
@@ -464,3 +466,32 @@ In real-world accounting archives (e.g. `00_РМ_КАСКАДА_2026_ЕООД`),
        - Created GitHub Actions CI workflow (`.github/workflows/ci.yml`) for automated multi-version Python testing and Docker smoke testing.
   - **Verification**:
     - Full pytest suite passing cleanly (686/686 tests).
+
+- **Problem #11: Automated Statutory Requisites Control under Accountancy Act (ЗСч чл. 6 и 7) and VAT Act (ЗДДС чл. 114) (P2)**:
+  - **Context & Motivation**:
+    1. *Legal and Accounting Validity*: An invoice is both an accounting record and a legal instrument under Bulgarian law. Missing mandatory statutory requisites (e.g. absent legal grounds for non-charging VAT under Art. 114(1)(11), Art. 113(9), and Art. 86(3) of ЗДДС, or incorrect IBAN) triggers severe penalties, rejection of expenses, and denial of tax credit during NRA tax audits.
+    2. *Tax Regimes & Reverse Charge*: Transactions with 0% or uncharged VAT strictly require explicit statutory grounds on the invoice (e.g. Art. 163a for scrap and grain, Art. 82(2) for reverse charge, Art. 53 for intra-community supply (ВОД), Art. 141 for triangular operations, Art. 28 for export, or Art. 113(9) for non-VAT registered suppliers).
+    3. *Banking Requisites Integrity*: Incorrect IBAN formatting or invalid Mod-97 checksums cause payment execution failures and bookkeeping discrepancies. Commercial bank recognition provides automated auditing and verification of bank requisites.
+    4. *Accountability (Signatories)*: Under Art. 6(1)(5) of the Accountancy Act (ЗСч), primary accounting documents must state the name of the person who compiled the document or the legally liable manager (МОЛ). Under Art. 7 ЗСч and Art. 114 ЗДДС, physical signatures/stamps are not mandatory on electronic invoices, but compiler/representative identification is mandatory.
+  - **Implemented Architecture**:
+    1. *Official Bulgarian Banks Registry & BIC / IBAN Cross-Verification (`legal_compliance.py`)*:
+       - `BULGARIAN_BANKS` directory: catalogs BNB-licensed commercial banks with 4-letter BAFO codes, official Bulgarian legal names, primary BICs, and name/brand aliases.
+       - ISO 7064 Modulo 97-10 checksum validation (`validate_iban_modulo97`).
+       - Strict 22-character Bulgarian IBAN format checking with BAFO branch/account verification.
+       - BIC format validation and IBAN ↔ BIC cross-compatibility checking with bank merger/alias groups (`BANK_ALIAS_GROUPS`).
+       - Bank transfer missing IBAN detection (`MISSING_IBAN_FOR_BANK_TRANSFER`).
+    2. *Statutory Zero & Non-Charged VAT Audit (`detect_vat_exemption_grounds`)*:
+       - `VAT_LEGAL_GROUNDS_CATALOG`: comprehensive catalog of 14 statutory tax regimes under ЗДДС & Directive 2006/112/EC (Art. 163a scrap/grain reverse charge, Art. 82(2) reverse charge, Art. 53 ВОД, Art. 141 triangular operations, Art. 28 export outside EU, Art. 113(9) non-registered supplier, Articles 38-50 exempt supplies).
+       - Intelligent detection distinguishing true zero VAT from positive VAT invoices where VAT amount was unextracted or implicit in totals.
+       - Strict error emission (`MISSING_VAT_EXEMPTION_REASON`) when domestic VAT is zero or uncharged without valid statutory grounds.
+    3. *Signatories & Accountability Audit (`validate_signatories_compliance`)*:
+       - `extract_signatories`: extracts compiler (`compiled_by`) and receiver (`received_by`) names from OCR lines and tokens.
+       - Verifies compiler name or supplier representative/MOL (`supplier.mol`) per Art. 6(1)(5) ЗСч; emits `MISSING_ISSUER_NAME_OR_MOL` warning if neither is present.
+    4. *Unified Statutory Audit & Reporting (`audit_legal_compliance`)*:
+       - Generates `LegalComplianceReport` evaluating `zsch_compliant`, `zdds_compliant`, and overall `is_compliant`.
+       - Integrated into `validate_invoice()`, populating `legal_compliance_report` on both `ValidationResult` and `Invoice`.
+       - Integrated into `serialize_invoice()`, `POST /api/v1/invoices/validate`, and database HITL re-validation workflows.
+  - **Verification**:
+    - Dedicated test suite `tests/test_legal_compliance_validator.py`: 23/23 tests passing (100%).
+    - Full regression test suite: 815/815 tests passing cleanly across the entire repository.
+

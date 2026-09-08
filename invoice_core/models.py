@@ -422,6 +422,10 @@ class PaymentDetails:
     iban: str | None = None
     bic: str | None = None
     due_date: str | None = None  # YYYY-MM-DD
+    bank_code: str | None = None
+    is_iban_valid: bool | None = None
+    is_bic_valid: bool | None = None
+    bank_recognized: bool = False
 
 
 @dataclass
@@ -437,11 +441,66 @@ class ValidationIssue:
 
 
 @dataclass
+class BankComplianceDetails:
+    """Bank requisites extraction and validation details under Bulgarian banking standards."""
+    iban: str | None = None
+    bic: str | None = None
+    bank_name: str | None = None
+    bank_code: str | None = None
+    is_iban_valid: bool = False
+    is_bic_valid: bool = False
+    bank_recognized: bool = False
+    servicing_bank: str | None = None
+    issues: list[str] = field(default_factory=list)
+
+
+@dataclass
+class VatRegimeComplianceDetails:
+    """Statutory VAT regime validation details under VAT Act (ЗДДС чл. 114, 113, 86, 163а, 141, 28, etc.)."""
+    vat_rate_pct: Decimal | None = None
+    vat_amount: Decimal | None = None
+    tax_base: Decimal | None = None
+    is_zero_or_exempt: bool = False
+    legal_basis_code: str | None = None
+    legal_basis_article: str | None = None
+    legal_basis_text: str | None = None
+    regime_name: str | None = None
+    is_valid_basis: bool = False
+    issues: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SignatoriesComplianceDetails:
+    """Compiler and representative verification under Art. 6(1)(5) Accountancy Act (ЗСч)."""
+    compiled_by: str | None = None
+    supplier_mol: str | None = None
+    recipient_mol: str | None = None
+    received_by: str | None = None
+    is_compliant: bool = False
+    issues: list[str] = field(default_factory=list)
+
+
+@dataclass
+class LegalComplianceReport:
+    """Specialized statutory legal and tax compliance audit report."""
+    is_compliant: bool = False
+    zsch_compliant: bool = False
+    zdds_compliant: bool = False
+    bank_requisites: BankComplianceDetails = field(default_factory=BankComplianceDetails)
+    vat_regime: VatRegimeComplianceDetails = field(default_factory=VatRegimeComplianceDetails)
+    signatories: SignatoriesComplianceDetails = field(default_factory=SignatoriesComplianceDetails)
+    mandatory_requisites_check: dict[str, bool] = field(default_factory=dict)
+    errors: list[ValidationIssue] = field(default_factory=list)
+    warnings: list[ValidationIssue] = field(default_factory=list)
+
+
+@dataclass
 class ValidationResult:
     """Aggregated validation outcome."""
     is_valid: bool = False
     errors: list[ValidationIssue] = field(default_factory=list)
     warnings: list[ValidationIssue] = field(default_factory=list)
+    legal_compliance_report: LegalComplianceReport | None = None
 
 
 class DocumentType(str, Enum):
@@ -535,6 +594,8 @@ class InvoiceMetadata:
     correction_reason: str | None = None
     is_credit_note: bool = False
     is_debit_note: bool = False
+    compiled_by: str | None = None   # Съставител / Издал (чл. 6, ал. 1, т. 5 от ЗСч)
+    received_by: str | None = None   # Получил / Приел
 
 
 @dataclass
@@ -551,6 +612,7 @@ class Invoice:
     budget_payment: BudgetPaymentDetails | None = None
     fiscal_report: FiscalMemoryReportDetails | None = None
     goods_receipt: GoodsReceiptDetails | None = None
+    legal_compliance_report: LegalComplianceReport | None = None
 
 
 # ---------------------------------------------------------------------------
