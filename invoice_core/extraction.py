@@ -47,6 +47,7 @@ def extract_invoice_number(
     recipient_eik: str | None = None,
     supplier_vat: str | None = None,
     recipient_vat: str | None = None,
+    vendor_profile: Optional[Any] = None,
 ) -> str | None:
     """Extract the statutory 10-digit invoice number using prioritized candidate scoring.
 
@@ -60,6 +61,7 @@ def extract_invoice_number(
     - OCR Latin/Cyrillic homoglyph confusion (e.g. 'Homep' in Latin)
     - Metro-style prefix formats ('ФАКТУРА Н: 2208418424')
     - Line item numbers, VAT numbers, IBANs, and barcode noise.
+    - Applies learned vendor profile series patterns & spatial priors (RLHF).
     """
     known_eiks: set[str] = set()
     if supplier_eik:
@@ -70,6 +72,26 @@ def extract_invoice_number(
         known_eiks.add(re.sub(r'\D', '', supplier_vat).lstrip('0'))
     if recipient_vat:
         known_eiks.add(re.sub(r'\D', '', recipient_vat).lstrip('0'))
+
+    # Resolve vendor profile if not provided
+    if vendor_profile is None and supplier_eik:
+        vendor_profile = get_vendor_profile(supplier_eik)
+
+    if vendor_profile is None:
+        all_text_lower = " ".join(l.text for l in lines).lower()
+        for vp in get_vendor_profiles().values():
+            if vp.eik in all_text_lower or any(k in all_text_lower for k in vp.keywords):
+                vendor_profile = vp
+                break
+
+    series_info: dict[str, Any] = (vendor_profile.get("invoice_number_series") if hasattr(vendor_profile, "get") else getattr(vendor_profile, "invoice_number_series", None)) or {}
+    spatial_priors: dict[str, Any] = (vendor_profile.get("spatial_priors") if hasattr(vendor_profile, "get") else getattr(vendor_profile, "spatial_priors", None)) or {}
+    ocr_info: dict[str, Any] = (vendor_profile.get("ocr") if hasattr(vendor_profile, "get") else getattr(vendor_profile, "ocr", None)) or {}
+    custom_homoglyphs: dict[str, str] = ocr_info.get("homoglyphs", {})
+    is_dot_matrix_prof: bool = bool(
+        (vendor_profile.get("dot_matrix") if hasattr(vendor_profile, "get") else getattr(vendor_profile, "dot_matrix", False))
+        or ocr_info.get("dot_matrix")
+    )
 
     # Collect known EIKs from explicit labels in lines/tokens
     for line in lines:
@@ -104,14 +126,21 @@ def extract_invoice_number(
             return None
         homo = {
             'L': '1', 'l': '1', 'I': '1', 'i': '1', '|': '1', 'T': '1', '!': '1',
-            'O': '0', 'o': '0', 'D': '0', 'Q': '0', 'C': '0', 'c': '0',
-            'P': '9', 'p': '9', 'q': '9', 'g': '9', 'F': '9', 'E': '9',
+            'O': '0', 'o': '0', 'D': '0', 'Q': '0',
+            # Matrix font artifacts (n->0, e->6, a->9, c->6)
+            'N': '0', 'n': '0', 'П': '0', 'п': '0',
+            'E': '6', 'e': '6', 'Е': '6', 'е': '6',
+            'A': '9', 'a': '9', 'А': '9', 'а': '9',
+            'C': '6', 'c': '6', 'С': '6', 'с': '6',
+            'P': '9', 'p': '9', 'q': '9', 'g': '9', 'F': '9',
             'S': '3', 's': '3', 'Щ': '3', 'щ': '3', 'Ш': '3', 'ш': '3', 'З': '3', 'з': '3', 'R': '5',
             'Z': '3', 'z': '3',
             'B': '8', 'b': '8', 'В': '8', 'в': '8',
             'G': '6', 'Б': '6', 'б': '6', '4': '6', '¢': '6',
-            'A': '2', 'a': '2', 'V': '2', 'v': '2', 'д': '2', 'Д': '2',
+            'V': '2', 'v': '2', 'д': '2', 'Д': '2',
         }
+        if custom_homoglyphs:
+            homo.update(custom_homoglyphs)
         res = []
         for ch in clean_s:
             if ch.isdigit():
@@ -182,12 +211,17 @@ def extract_invoice_number(
         if raw_len == 9 and is_valid_eik9(clean_digits):
             return True
         lower_line = line_text.lower()
-        # Phone number check
-        has_phone_kw = any(w in lower_line for w in ['тел', 'gsm', 'phone', 'телефон', 'fax', 'факс'])
+        # Phone number check - check for any phone keyword anywhere in the line (with or without colon/punctuation)
+        has_phone_kw = any(w in lower_line for w in ['тел', 'gsm', 'phone', 'телефон', 'fax', 'факс', 'моб', 'contact', 'контакт'])
         if has_phone_kw:
             return True
-        if re.match(r'^(?:08[789]|098)\d{7}$', clean_digits):
-            if not any(w in lower_line for w in ['фактура', 'invoice', 'номер', 'homep', '№', 'no']):
+        # Bulgarian mobile phone numbers (087, 088, 089, 098 + 7 digits) or international (+3598...)
+        if re.match(r'^(?:08[789]|098)\d{7}$', clean_digits) or re.match(r'^(?:3598[789]|35998|003598[789]|0035998)\d{7}$', clean_digits):
+            has_explicit_invoice_label = bool(re.search(
+                r'(?i)(?:фактур[аея]|invoice|кредитно\s+известие|дебитно\s+известие)\s*(?:[№#]|no\.?|n[o0]\.?|[нhNn][оo0][мm][еe][рp]|№)\s*[:./\-]*\s*' + re.escape(clean_digits),
+                line_text
+            ))
+            if not has_explicit_invoice_label:
                 return True
         # Fiscal cash register / serial number check
         if any(kw in lower_line for kw in ['сериен', 'cepyex']):
@@ -209,11 +243,61 @@ def extract_invoice_number(
         r'(?i)(?:фактур[аея]|фактув[аея]|факгуг[аея]|факгу[кр][аея]|maktyf[аa]|paktyf[аa]?|[od]aktyf\s*[аae]?|qak[tт][yу][pр][aа]|tye\s*a|invoice|кредитно\s+известие|дебитно\s+известие|известие|протокол)\s*(?:[№#]|no\.?|n[o0]\.?|nes|fee|hee|he[et]?|its|tits|вен|ван|в:|в\.|[нhNn][оo0][мm][еe][рp]|[нhNn][еe][нn]|[нhNn]\.?|[нhNn]:|мо\.?|хо\.?|а/о|ва)?\s*[:./\"\'“\-]*\s*([зЗ]?(?:[0-9A-Za-zА-Яа-я$¢]{9,13}|\d{3,6}\s*\d{4,7}))'
     )
     pat_nomer = re.compile(
-        r'(?i)(?:[нhNn][оo0][мm][еe][рp]|[нhNn][еe][нn]|nes|мо|хо|а/о|a/o|no\.?|n[o0]\.?|№|ва)\s*[:./\"\'“\-]*\s*([зЗ]?(?:\d{3,6}\s*\d{4,7}|\d{5,11}))'
+        r'(?i)(?:[нhNn][оo0][мm][еe][рp]|[нhNn][еe][нn]|nes|мо|хо|а/о|a/o|no\.?|n[o0]\.?|№|ва)\s*[:./\"\'“\-]*\s*([зЗ]?(?:[0-9A-Za-zА-Яа-я$¢]{9,13}|\d{3,6}\s*\d{4,7}|\d{5,11}))'
     )
 
     page1_lines = [l for l in lines if getattr(l, 'page_number', 1) == 1]
     other_lines = [l for l in lines if getattr(l, 'page_number', 1) > 1]
+    page1_tokens = [t for t in tokens if getattr(t, 'page_number', 1) == 1 and t.bbox[1] < 1300]
+
+    # --- Pass 0-Learned: High-Priority Learned Vendor Series & Spatial Priors (RLHF) ---
+    if series_info:
+        req_prefix = str(series_info.get("prefix", "")).strip()
+        req_len = int(series_info.get("length", 10))
+        req_regex = series_info.get("regex")
+
+        for l in page1_lines:
+            line_txt = l.text
+            for w in line_txt.split():
+                cand = _clean_and_format(w)
+                if not cand and is_dot_matrix_prof:
+                    cand = _decode_dotmatrix_num(w)
+                if cand:
+                    matches_prefix = not req_prefix or cand.startswith(req_prefix)
+                    matches_len = len(cand) == req_len
+                    matches_re = bool(re.match(req_regex, cand)) if req_regex else True
+                    if matches_prefix and matches_len and matches_re:
+                        if not _is_disqualified(cand, req_len, line_txt, is_p1=True):
+                            candidates.append((260, cand, f'learned_series_line: {line_txt}'))
+
+        for t in page1_tokens:
+            cand = _clean_and_format(t.text)
+            if not cand and is_dot_matrix_prof:
+                cand = _decode_dotmatrix_num(t.text.strip())
+            if cand:
+                matches_prefix = not req_prefix or cand.startswith(req_prefix)
+                matches_len = len(cand) == req_len
+                matches_re = bool(re.match(req_regex, cand)) if req_regex else True
+                if matches_prefix and matches_len and matches_re:
+                    if not _is_disqualified(cand, req_len, t.text, is_p1=True):
+                        candidates.append((250, cand, f'learned_series_token: {t.text}'))
+
+    inv_prior = spatial_priors.get("invoice_number")
+    if inv_prior and page1_tokens:
+        prior_bbox = inv_prior.get("bbox") if isinstance(inv_prior, dict) else (inv_prior if isinstance(inv_prior, (list, tuple)) else None)
+        if prior_bbox and len(prior_bbox) == 4:
+            max_w = max((t.bbox[0] + t.bbox[2]) for t in page1_tokens) or 2000
+            max_h = max((t.bbox[1] + t.bbox[3]) for t in page1_tokens) or 3000
+            pr_x, pr_y, pr_w, pr_h = prior_bbox
+            for t in page1_tokens:
+                cand = _clean_and_format(t.text)
+                if not cand and is_dot_matrix_prof:
+                    cand = _decode_dotmatrix_num(t.text.strip())
+                if cand and not _is_disqualified(cand, len(cand), t.text, is_p1=True):
+                    rel_x = t.bbox[0] / max_w
+                    rel_y = t.bbox[1] / max_h
+                    if abs(rel_x - pr_x) < 0.15 and abs(rel_y - pr_y) < 0.15:
+                        candidates.append((240, cand, f'learned_spatial_prior: {t.text} @ ({rel_x:.2f},{rel_y:.2f})'))
 
     # --- Pass 0: Targeted check for Detelina 100099XXXX invoices ---
     all_lines_text = " ".join(l.text for l in lines)
@@ -277,7 +361,7 @@ def extract_invoice_number(
         t1 = page1_lines[i].text.strip().lower()
         if re.search(r'(?i)\b(?:[нhNn][оo0][мm][еe][рp]|фактура|известие|протокол|мо|хо|№|no\.?|invoice)\b\s*[:./\"\'“\-]*$', t1):
             t2 = page1_lines[i+1].text.strip()
-            m = re.search(r'^[:./\"\'“\-]*\s*([зЗ]?(?:\d{3,6}\s*\d{4,7}|\d{5,10}))\b', t2)
+            m = re.search(r'^[:./\"\'“\-]*\s*([зЗ]?(?:[0-9A-Za-zА-Яа-я$¢]{9,13}|\d{3,6}\s*\d{4,7}|\d{5,10}))\b', t2)
             if m:
                 raw = m.group(1)
                 raw_len = len(re.sub(r'\s+', '', raw))
@@ -297,6 +381,11 @@ def extract_invoice_number(
             if not _is_disqualified(clean_t, 10, t.text, is_p1=True):
                 score = 90 - (t.bbox[1] // 100)
                 candidates.append((score, clean_t, f'p1_upper_token: {t.text}'))
+        elif not clean_t.isdigit() and 9 <= len(t.text.strip()) <= 12:
+            decoded = _decode_dotmatrix_num(t.text.strip())
+            if decoded and not _is_disqualified(decoded, 10, t.text, is_p1=True):
+                score = 85 - (t.bbox[1] // 100)
+                candidates.append((score, decoded, f'p1_upper_dotmatrix_token: {t.text}'))
 
     if candidates:
         candidates.sort(key=lambda x: x[0], reverse=True)
@@ -316,13 +405,25 @@ def extract_invoice_number(
     # --- Pass 3: Ultimate fallback for documents where invoice number lacks explicit labels ---
     if not candidates:
         for line in lines:
-            if re.search(r'^\s*(?:телефон|тел|gsm)\s*[:.]\s*\d', line.text, re.IGNORECASE):
+            line_text = line.text
+            lower_text = line_text.lower()
+            # Unconditionally skip line if it contains any phone/fax/mobile keyword anywhere (with or without colon/punctuation)
+            if any(w in lower_text for w in ['тел', 'gsm', 'phone', 'телефон', 'fax', 'факс', 'моб', 'contact', 'контакт']):
                 continue
-            for m in re.finditer(r'\b(\d{10})\b', line.text):
+            for m in re.finditer(r'\b(\d{10})\b', line_text):
                 cand = m.group(1)
                 clean_digits = re.sub(r'\D', '', cand)
+                # Disqualify Bulgarian mobile phone numbers (087X, 088X, 089X, 098X + 6 digits)
+                if re.match(r'^(?:08[789]|098)\d{7}$', clean_digits):
+                    continue
+                # Disqualify international Bulgarian mobile phone numbers
+                if re.match(r'^(?:3598[789]|35998|003598[789]|0035998)\d{7}$', clean_digits):
+                    continue
+                # Full candidate validation check against known EIKs, VAT, IBANs, fiscal numbers, etc.
+                if _is_disqualified(cand, 10, line_text, is_p1=False):
+                    continue
                 if clean_digits.lstrip('0') not in known_eiks and not is_valid_eik9(clean_digits):
-                    candidates.append((10, cand, f'fallback_10digit: {line.text}'))
+                    candidates.append((10, cand, f'fallback_10digit: {line_text}'))
                     break
             if candidates:
                 break

@@ -143,6 +143,14 @@ class DocumentRecord(Base):
         order_by="AuditTrailRecord.timestamp.asc()",
     )
 
+    # RLHF Feedback Learning Records Relationship
+    feedback_records = relationship(
+        "InvoiceFeedbackRecord",
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="InvoiceFeedbackRecord.created_at.asc()",
+    )
+
     def to_dict(self, include_raw_evidence: bool = False) -> dict[str, Any]:
         """Convert record to API-friendly dictionary with 100% backwards-compatibility."""
         corr = json.loads(self.corrected_data_json) if self.corrected_data_json else None
@@ -158,6 +166,15 @@ class DocumentRecord(Base):
         fin = active_norm.get("financial_summary", {})
         line_items = active_norm.get("line_items", [])
 
+        curr = (
+            self.currency
+            or meta.get("currency")
+            or fin.get("currency")
+            or (fin.get("total_amount_due", {}).get("currency") if isinstance(fin.get("total_amount_due"), dict) else None)
+            or ("EUR" if str(self.date_issued or meta.get("date_issued") or "") >= "2026-01-01" else "BGN")
+        )
+        curr = str(curr)[:3].upper()
+
         result = {
             "id": self.id,
             "file_name": self.file_name,
@@ -172,7 +189,7 @@ class DocumentRecord(Base):
             "invoice_number": self.invoice_number or meta.get("invoice_number"),
             "date_issued": self.date_issued or meta.get("date_issued"),
             "date_tax_event": self.date_tax_event or meta.get("date_tax_event"),
-            "currency": self.currency or meta.get("currency") or "BGN",
+            "currency": curr,
             "tax_base": self.tax_base,
             "vat_amount": self.vat_amount,
             "total_amount": self.total_amount,
@@ -180,7 +197,7 @@ class DocumentRecord(Base):
                 "invoice_number": self.invoice_number or meta.get("invoice_number"),
                 "date_issued": self.date_issued or meta.get("date_issued"),
                 "date_tax_event": self.date_tax_event or meta.get("date_tax_event"),
-                "currency": self.currency or meta.get("currency") or "BGN",
+                "currency": curr,
             },
             "supplier": {
                 "name": self.supplier_name or supplier.get("name"),
@@ -195,9 +212,10 @@ class DocumentRecord(Base):
                 "address": self.recipient_address or recipient.get("address"),
             },
             "financial_summary": {
-                "tax_base": {"amount": f"{self.tax_base:.2f}", "currency": self.currency},
-                "vat_amount": {"amount": f"{self.vat_amount:.2f}", "currency": self.currency},
-                "total_amount_due": {"amount": f"{self.total_amount:.2f}", "currency": self.currency},
+                "currency": curr,
+                "tax_base": {"amount": f"{self.tax_base:.2f}", "currency": curr},
+                "vat_amount": {"amount": f"{self.vat_amount:.2f}", "currency": curr},
+                "total_amount_due": {"amount": f"{self.total_amount:.2f}", "currency": curr},
             },
             "line_items": line_items,
             "validation": active_val,
@@ -211,6 +229,9 @@ class DocumentRecord(Base):
 
         if include_raw_evidence and "raw_ocr_evidence" in ocr:
             result["raw_ocr_evidence"] = ocr["raw_ocr_evidence"]
+
+        if getattr(self, "_feedback_learning", None):
+            result["feedback_learning"] = self._feedback_learning
 
         return result
 
@@ -316,6 +337,46 @@ class WebhookLogRecord(Base):
         }
 
 
+class InvoiceFeedbackRecord(Base):
+    """Stores human-in-the-loop corrections for Reinforcement Learning from Human Feedback (RLHF)."""
+    __tablename__ = "invoice_feedback_learning"
+
+    id = Column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    document_id = Column(String(64), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    supplier_eik = Column(String(32), nullable=True, index=True)
+    supplier_name = Column(String(255), nullable=True)
+    field_name = Column(String(64), nullable=False, index=True)
+    original_value = Column(Text, nullable=True)
+    corrected_value = Column(Text, nullable=True)
+    raw_token_text = Column(Text, nullable=True)
+    token_bbox_json = Column(Text, nullable=True)
+    learned_rule_type = Column(String(64), nullable=True)
+    reward_score = Column(Float, default=1.0)
+    actor = Column(String(64), default="accountant")
+    details_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+
+    document = relationship("DocumentRecord", back_populates="feedback_records")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "supplier_eik": self.supplier_eik,
+            "supplier_name": self.supplier_name,
+            "field_name": self.field_name,
+            "original_value": self.original_value,
+            "corrected_value": self.corrected_value,
+            "raw_token_text": self.raw_token_text,
+            "token_bbox": json.loads(self.token_bbox_json) if self.token_bbox_json else None,
+            "learned_rule_type": self.learned_rule_type,
+            "reward_score": self.reward_score,
+            "actor": self.actor,
+            "details": json.loads(self.details_json) if self.details_json else {},
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Database Initialization & Session Dependency
 # ---------------------------------------------------------------------------
@@ -414,11 +475,16 @@ class DocumentStorageManager:
             except Exception as exc:
                 logger.error("Error rendering PDF page %d for %s: %s", page_number, doc_id, exc)
                 return None
-        elif suffix in {".png", ".jpg", ".jpeg"}:
+        elif suffix in {".png", ".jpg", ".jpeg", ".tiff", ".tif"}:
             try:
                 img = Image.open(file_path)
+                n_frames = getattr(img, "n_frames", 1)
+                if n_frames > 1:
+                    if page_number < 1 or page_number > n_frames:
+                        return None
+                    img.seek(page_number - 1)
                 out = io.BytesIO()
-                img.save(out, format="PNG")
+                img.convert("RGB").save(out, format="PNG")
                 return out.getvalue()
             except Exception as exc:
                 logger.error("Error loading image for %s: %s", doc_id, exc)
@@ -482,6 +548,18 @@ def save_document_to_db(
         except (ValueError, TypeError):
             return 0.0
 
+    doc_curr = (
+        meta.get("currency")
+        or fin.get("currency")
+        or (fin.get("total_amount_due", {}).get("currency") if isinstance(fin.get("total_amount_due"), dict) else None)
+        or (fin.get("tax_base", {}).get("currency") if isinstance(fin.get("tax_base"), dict) else None)
+        or ocr_result.get("currency")
+    )
+    if not doc_curr:
+        issue_d = str(meta.get("date_issued") or "")
+        doc_curr = "EUR" if issue_d >= "2026-01-01" else "BGN"
+    doc_curr = str(doc_curr)[:3].upper()
+
     record = DocumentRecord(
         id=doc_id,
         file_name=file_name,
@@ -496,7 +574,7 @@ def save_document_to_db(
         invoice_number=meta.get("invoice_number"),
         date_issued=meta.get("date_issued"),
         date_tax_event=meta.get("date_tax_event"),
-        currency=meta.get("currency") or "BGN",
+        currency=doc_curr,
         supplier_name=supplier.get("name"),
         supplier_eik=supplier.get("eik"),
         supplier_vat=supplier.get("vat_number"),
@@ -549,6 +627,37 @@ def save_document_to_db(
     db.add(audit)
     db.commit()
     db.refresh(record)
+
+    # Trigger automatic background Supabase sync if enabled
+    try:
+        from supabase_sync import is_supabase_configured, sync_invoice_to_supabase
+        if is_supabase_configured():
+            import asyncio
+            import threading
+
+            channel = "EMAIL_INGEST" if ocr_result.get("source_channel") == "email" else "MANUAL_UPLOAD"
+            sender = ocr_result.get("email_metadata", {}).get("sender")
+
+            def _run_sync_thread():
+                try:
+                    asyncio.run(sync_invoice_to_supabase(
+                        doc_id=doc_id,
+                        ocr_result=ocr_result,
+                        file_name=file_name,
+                        file_path=Path(file_path_str) if file_path_str else None,
+                        file_hash=file_hash,
+                        file_size=file_size,
+                        source_channel=channel,
+                        source_sender=sender,
+                        processing_time=processing_time,
+                    ))
+                except Exception as t_err:
+                    logger.warning("Background Supabase sync error: %s", t_err)
+
+            threading.Thread(target=_run_sync_thread, daemon=True, name=f"supa-sync-{doc_id[:8]}").start()
+    except Exception as supa_init_err:
+        logger.warning("Supabase sync initialization error: %s", supa_init_err)
+
     return record
 
 
@@ -684,6 +793,7 @@ def update_document_corrections(
     doc_id: str,
     corrections: dict[str, Any],
     actor: str = "accountant",
+    feedback_metadata: Optional[dict[str, Any]] = None,
 ) -> Optional[DocumentRecord]:
     """Apply manual field edits to an invoice document, re-evaluate validation, and log audit diff."""
     record = db.query(DocumentRecord).filter(DocumentRecord.id == doc_id).first()
@@ -843,6 +953,24 @@ def update_document_corrections(
             old_value=diff["old"],
             new_value=diff["new"],
         )
+
+    # -----------------------------------------------------------------------
+    # RLHF: Process Human Feedback & Adaptive Layout Learning
+    # -----------------------------------------------------------------------
+    learning_result = None
+    try:
+        from invoice_core.feedback_learning import process_human_feedback
+        learning_result = process_human_feedback(
+            db=db,
+            record=record,
+            diffs=diffs,
+            corrections=corrections,
+            actor=actor,
+            feedback_metadata=feedback_metadata or {},
+        )
+        setattr(record, "_feedback_learning", learning_result)
+    except Exception as exc:
+        logger.warning("Feedback learning process encountered non-critical error: %s", exc)
 
     db.commit()
     db.refresh(record)

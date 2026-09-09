@@ -111,7 +111,8 @@ def is_line_noise_token(t: OcrToken) -> bool:
     if re.fullmatch(r"[-_=~+|—\s]+", t.text) and len(t.text) >= 2:
         return True
     # Repetitive character string (e.g. OOOOOOOO, --------, ________)
-    if len(t.text) >= 10 and len(set(t.text.lower())) <= 3:
+    # Never discard statutory 10-digit invoice number tokens (e.g. 0000006960, 0000000001)
+    if len(t.text) >= 10 and len(set(t.text.lower())) <= 3 and not (len(t.text) == 10 and t.text.isdigit()):
         return True
 
     w, h = t.width, t.height
@@ -192,8 +193,8 @@ def score_token_quality(t: OcrToken) -> float:
     if t.text.endswith(('|', '`')):
         score -= 10.0
 
-    # Repetitive character string penalty
-    if len(t.text) > 10 and len(set(t.text.lower())) <= 3:
+    # Repetitive character string penalty (do not penalize statutory 10-digit invoice numbers)
+    if len(t.text) > 10 and len(set(t.text.lower())) <= 3 and not (len(t.text) == 10 and t.text.isdigit()):
         score -= 50.0
 
     return score

@@ -106,6 +106,18 @@ def serialize_invoice(invoice: Invoice) -> str:
     Bulgarian text is preserved (``ensure_ascii=False``).
     """
     raw = dataclasses.asdict(invoice)
+    curr = getattr(invoice.invoice_metadata, "currency", None) or (
+        invoice.financial_summary.total_amount_due.currency if invoice.financial_summary.total_amount_due else None
+    ) or (
+        invoice.financial_summary.tax_base.currency if invoice.financial_summary.tax_base else None
+    ) or ("EUR" if str(invoice.invoice_metadata.date_issued or "") >= "2026-01-01" else "BGN")
+
+    raw["currency"] = curr
+    if isinstance(raw.get("invoice_metadata"), dict):
+        raw["invoice_metadata"]["currency"] = curr
+    if isinstance(raw.get("financial_summary"), dict):
+        raw["financial_summary"]["currency"] = curr
+
     # Strict 3-layer architecture aliases (Layer 1: raw_ocr_evidence, Layer 2: normalized_data, Layer 3: validation_results)
     raw["normalized_data"] = {
         "invoice_metadata": raw.get("invoice_metadata"),
@@ -117,6 +129,7 @@ def serialize_invoice(invoice: Invoice) -> str:
         "budget_payment": raw.get("budget_payment"),
         "fiscal_report": raw.get("fiscal_report"),
         "goods_receipt": raw.get("goods_receipt"),
+        "currency": curr,
     }
     raw["validation_results"] = raw.get("validation")
     legal_rep = raw.get("legal_compliance_report") or (
@@ -406,6 +419,17 @@ def _extract_and_validate_from_tokens(
     fs = invoice.financial_summary
     tot_amount = fs.total_amount_due.amount
     primary_curr = fs.total_amount_due.currency or detected_currency or "BGN"
+    invoice.invoice_metadata.currency = primary_curr
+
+    # Propagate currency to financial fields and line items if missing
+    for mf in [fs.tax_base, fs.vat_amount, fs.total_amount_due]:
+        if mf and mf.currency is None:
+            mf.currency = primary_curr
+    for it in invoice.line_items:
+        if it.unit_price_net and not it.unit_price_net.currency:
+            it.unit_price_net.currency = primary_curr
+        if it.total_price_net and not it.total_price_net.currency:
+            it.total_price_net.currency = primary_curr
 
     if primary_curr == "EUR":
         fs.total_amount_eur = MoneyAmount(tot_amount, "EUR")

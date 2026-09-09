@@ -187,6 +187,11 @@ class TestInvoiceNumberEikDisambiguation:
             "Телефон: 0885727402",
             "Тел. 0887845607",
             "GSM: 0899123456",
+            "Телефон 0888979000",                    # Without colon
+            "Телефон Телефон 0888979000",            # Repeated token without colon
+            "Доставчик: Клийн Системс Тел 0888979000", # Embedded within line
+            "МОЛ: Пламен Николов GSM 0878123456",     # GSM within party details
+            "Факс 029876543",                        # Fax number
         ]
         for text in phone_cases:
             line = LogicalLine(
@@ -198,6 +203,73 @@ class TestInvoiceNumberEikDisambiguation:
             )
             res = extract_invoice_number([line], line.tokens)
             assert res is None, f"Telephone line '{text}' incorrectly extracted as invoice number: {res}"
+
+    def test_pass3_fallback_disqualifies_bulgarian_mobile_numbers(self):
+        """In Pass 3 (fallback without explicit labels), Bulgarian mobile numbers (087/088/089/098) must be rejected."""
+        mobile_numbers = [
+            "0888979000",  # A1 Bulgaria mobile
+            "0878123456",  # Vivacom mobile
+            "0899654321",  # Yettel mobile
+            "0988112233",  # Bulsatcom / alternative mobile
+        ]
+        for mob in mobile_numbers:
+            # Line without any keywords, purely testing Pass 3 fallback
+            line = LogicalLine(
+                tokens=[OcrToken(text=mob, conf=95.0, bbox=(1200, 700, 200, 30), page_number=1)],
+                bbox=(1200, 700, 200, 30),
+                text=mob,
+                page_number=1,
+                y_center=715.0,
+            )
+            res = extract_invoice_number([line], line.tokens)
+            assert res is None, f"Mobile phone '{mob}' was incorrectly accepted as fallback invoice number: {res}"
+
+    def test_leading_zero_invoice_number_not_rejected_as_noise(self):
+        """Statutory 10-digit invoice numbers starting with multiple zeros (e.g. 0000006960) must be preserved."""
+        tokens = [
+            OcrToken(text="Номер:", conf=96.0, bbox=(1703, 373, 145, 53), page_number=1),
+            OcrToken(text="0000006960", conf=92.0, bbox=(2069, 373, 248, 40), page_number=1),
+        ]
+        lines = group_tokens_into_lines(tokens)
+        res = extract_invoice_number(lines, tokens)
+        assert res == "0000006960", f"Expected 0000006960, got {res}"
+
+    def test_dotmatrix_homoglyph_decoding_neacn(self):
+        """Dot-matrix font homoglyphs (n->0, e->6, a->9, c->6) following 'Номер:' must decode to '0000006960'."""
+        cases = [
+            "Номер: nnnnnneacn",       # Cyrillic Номер: with lowercase dot-matrix string
+            "Homep: NNNNNNEACN",       # Latin Homep: with uppercase dot-matrix string
+            "Фактура №: nnnnnneacn",   # Faktura label with dot-matrix string
+            "Номер: nn0000eacn",       # Mixed numbers and dot-matrix letters
+        ]
+        for text in cases:
+            line = LogicalLine(
+                tokens=[OcrToken(text=text, conf=88.0, bbox=(1700, 370, 450, 40), page_number=1)],
+                bbox=(1700, 370, 450, 40),
+                text=text,
+                page_number=1,
+                y_center=390.0,
+            )
+            res = extract_invoice_number([line], line.tokens)
+            assert res == "0000006960", f"Expected 0000006960 for '{text}', got {res}"
+
+        # Test two-line structure: Line 1 'Номер:', Line 2 'nnnnnneacn'
+        l1 = LogicalLine(
+            tokens=[OcrToken(text="Номер:", conf=95.0, bbox=(1700, 370, 150, 40), page_number=1)],
+            bbox=(1700, 370, 150, 40),
+            text="Номер:",
+            page_number=1,
+            y_center=390.0,
+        )
+        l2 = LogicalLine(
+            tokens=[OcrToken(text="nnnnnneacn", conf=85.0, bbox=(2050, 370, 250, 40), page_number=1)],
+            bbox=(2050, 370, 250, 40),
+            text="nnnnnneacn",
+            page_number=1,
+            y_center=390.0,
+        )
+        res_twoline = extract_invoice_number([l1, l2], l1.tokens + l2.tokens)
+        assert res_twoline == "0000006960", f"Expected 0000006960 for two-line, got {res_twoline}"
 
     def test_validation_issue_emitted_if_invoice_number_matches_eik(self):
         """Layer 3 validation must flag an error if invoice number matches counterparty EIK."""

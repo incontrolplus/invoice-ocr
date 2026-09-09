@@ -596,6 +596,7 @@ class InvoiceMetadata:
     is_debit_note: bool = False
     compiled_by: str | None = None   # Съставител / Издал (чл. 6, ал. 1, т. 5 от ЗСч)
     received_by: str | None = None   # Получил / Приел
+    currency: str | None = None
 
 
 @dataclass

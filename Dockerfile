@@ -96,6 +96,7 @@ COPY --chown=appuser:appgroup contractor_verification.py .
 COPY --chown=appuser:appgroup database.py .
 COPY --chown=appuser:appgroup webhooks.py .
 COPY --chown=appuser:appgroup api_server.py .
+COPY --chown=appuser:appgroup supabase_sync.py .
 COPY --chown=appuser:appgroup invoice_core/ ./invoice_core/
 COPY --chown=appuser:appgroup config/ ./config/
 COPY --chown=appuser:appgroup vendor_profiles/ ./vendor_profiles/

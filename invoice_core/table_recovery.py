@@ -603,6 +603,18 @@ def extract_fiscal_fuel_receipt_items(
     financial_summary: FinancialSummary | None,
 ) -> list[LineItem]:
     """Extract line item from a fiscal receipt / fuel receipt format (e.g. 38.pdf)."""
+    # Guard: strictly restrict to genuine fiscal receipts and fuel slips
+    all_text_lower = " ".join(l.text_lower for l in lines)
+    is_receipt_or_fuel = any(
+        kw in all_text_lower
+        for kw in [
+            "фискален бон", "фискална касова бележка", "касов бон", "клиентска бележка",
+            "пропан", "бутан", "дизел", "бензин", "гориво", "бензиностанция", "унп"
+        ]
+    )
+    if not is_receipt_or_fuel:
+        return []
+
     items = []
     for idx, l in enumerate(lines):
         t_low = l.text_lower
@@ -612,7 +624,10 @@ def extract_fiscal_fuel_receipt_items(
             for p_idx in range(idx - 1, max(-1, idx - 5), -1):
                 prev_t = lines[p_idx].text.strip()
                 prev_low = prev_t.lower()
-                if any(kw in prev_low for kw in ["обект", "поръчка", "фактура", "унп", "еик", "оригинал"]):
+                if any(kw in prev_low for kw in [
+                    "обект", "поръчка", "фактура", "унп", "еик", "оригинал",
+                    "получател", "доставчик", "мол", "длъжностно", "съставил", "приел", "цветанов"
+                ]):
                     continue
                 if len(prev_t) >= 3:
                     desc = prev_t
@@ -693,10 +708,12 @@ def extract_line_items(
     two-line item merging, plausibility ceiling against financial summary,
     and strict null fallback for occluded descriptions.
     """
-    # 1. Check for fiscal receipt / fuel receipt format
-    receipt_items = extract_fiscal_fuel_receipt_items(lines, financial_summary)
-    if receipt_items:
-        return receipt_items
+    # 1. Check for fiscal receipt / fuel receipt format (only when no structured table data lines exist)
+    has_structured_table = any(len(getattr(tbl, "data_lines", [])) > 0 for tbl in table_regions)
+    if not has_structured_table:
+        receipt_items = extract_fiscal_fuel_receipt_items(lines, financial_summary)
+        if receipt_items:
+            return receipt_items
 
     items: list[LineItem] = []
     if not table_regions:
@@ -970,6 +987,12 @@ def extract_line_items(
 
             # Description (Feature 19: Strict Null Fallback)
             desc_clean = desc.strip() if desc else ""
+            if desc_clean:
+                # Strip leading item index number if present (e.g. "1 Куриерска услуга..." -> "Куриерска услуга...")
+                desc_clean = re.sub(r'^\s*\d{1,3}\s+', '', desc_clean)
+                # Normalize OCR artifacts in description (e.g. "Ne" / "No" -> "№")
+                desc_clean = re.sub(r'\b(?:Ne|No|Nº)\b', '№', desc_clean)
+
             if desc_clean and desc_clean.lower() not in banned_desc:
                 item.description = desc_clean
             else:
@@ -977,6 +1000,8 @@ def extract_line_items(
 
             # Unit
             if unit:
+                if re.match(r'^(?:6p\.?|бр\.?|бр)$', unit.lower()):
+                    unit = "бр."
                 item.unit = unit
 
             # Quantity

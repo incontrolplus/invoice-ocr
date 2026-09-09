@@ -64,6 +64,7 @@ class VendorProfile(BaseModel):
     fused_eik_prefixes: list[str] = Field(default_factory=list, description="Compatibility alias for fused prefixes")
     dot_matrix: bool = Field(default=False, description="Flag indicating dot-matrix 9-pin/24-pin invoice print")
     invoice_number_series: dict[str, Any] = Field(default_factory=dict, description="Series prefix and length rules")
+    spatial_priors: dict[str, Any] = Field(default_factory=dict, description="Learned spatial bounding box priors for key fields")
     layout: dict[str, Any] = Field(default_factory=dict, description="Layout configuration (e.g. customer_box, recapitulation_table)")
     ocr: dict[str, Any] = Field(default_factory=dict, description="OCR specific settings (e.g. dot_matrix, psm)")
     banking: list[dict[str, Any]] = Field(default_factory=list, description="Vendor banking details")
@@ -154,6 +155,12 @@ class VendorProfile(BaseModel):
         elif not self.column_offsets and "column_offsets" in self.layout:
             self.column_offsets = dict(self.layout["column_offsets"])
 
+        # 6. spatial_priors and layout["spatial_priors"] sync
+        if self.spatial_priors and "spatial_priors" not in self.layout:
+            self.layout["spatial_priors"] = self.spatial_priors
+        elif not self.spatial_priors and "spatial_priors" in self.layout:
+            self.spatial_priors = dict(self.layout["spatial_priors"])
+
         return self
 
     def __getitem__(self, key: str) -> Any:
@@ -181,6 +188,7 @@ class VendorProfile(BaseModel):
             "fused_eik_prefixes": self.fused_eik_prefixes,
             "dot_matrix": self.dot_matrix,
             "invoice_number_series": self.invoice_number_series,
+            "spatial_priors": self.spatial_priors,
             "layout": self.layout,
             "ocr": self.ocr,
             "banking": self.banking,

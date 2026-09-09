@@ -79,6 +79,7 @@
 | 64 | Human-in-the-Loop (HITL) Web Dashboard | Standalone split-screen web application: left panel with high-resolution PDF/image rendering and interactive HTML5 Canvas bounding boxes (color-coded by confidence: green, yellow, red); right panel with editable fields, live double-entry accounting balance recalculator (Debit == Credit check), audit drawer, and 1-click approval | M14 | Pillar 4 (P1) |
 | 65 | Production Multi-Stage Docker Containerization & Compose Stack | Optimized multi-stage `Dockerfile` with compiled Tesseract 5, Bulgarian/English models (`bul`, `eng`, `osd`), OpenCV headless runtime libraries, unprivileged user `appuser`, healthcheck, and `docker-compose.yml` with PostgreSQL 16 persistence | M14 | Pillar 4 (P1) |
 | 66 | Worker Pool, Memory Guard & Streaming Batch Pipeline | Dedicated isolated `OCRProcessPoolExecutor` decoupled from FastAPI async event loop; automatic worker recycling after `MAX_PAGES_PER_WORKER` tasks to eliminate native C-lib memory leaks (OpenCV, PyMuPDF, Leptonica); RSS Memory Guard threshold (`MAX_WORKER_MEMORY_MB`); NDJSON sliding-window streaming (`/api/v1/invoices/batch/stream` and `iter_process_batch`) for O(1) RAM usage; verified 4.09x speedup on 50-document benchmark with 0 FD leaks and 0 memory drift | M15 | Goal 4 (P2) |
+| 67 | Zero-Touch Ingestion (Email Webhook, Watcher, IMAP & Multi-Channel Reverse Notifications) | Automated zero-touch inbound invoice pipeline: REST webhook (`/api/v1/ingest/email`) supporting multipart/form-data, Cloudflare Worker JSON, and raw RFC 822; SPF/DKIM verification; automated logo/signature (<10KB) & non-document filtering; multi-page TIFF & PDF support; local/cloud storage directory watcher (`FolderWatcher`, `/api/v1/ingest/watcher/scan`); IMAP mailbox poller (`ImapPoller`); multi-channel reverse notifications (Bulgarian HTML/Text email confirmation, Telegram Markdown cards, Slack Block Kit, outbound ERP webhook) with direct HITL dashboard link (`/dashboard?doc_id=...`); verified ≤ 15s SLA on Bulgarian invoices with 100% test pass rate | M16 | Goal 1 (P0) |
 
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
@@ -99,6 +100,7 @@
 | M13 | Pillar 3 (P1): Full NAP VAT Cycle & Online Contractor Verification | Real-time contractor verification (Commercial Register, NRA VAT Register Art. 94, EU VIES, SQLite cache); Art. 117 protocols for Reverse Charge/ВОП with dual-ledger reflection; full statutory NAP export package (POKUPKI.TXT, PRODAGBI.TXT, DEKLAR.TXT, ZIP) (Features 57, 58, 59) | M11, M12 | DONE |
 | M14 | Pillar 4 (P1): Persistent Database, Webhook Architecture & HITL Interface | Persistent SQLAlchemy models (`DocumentRecord`, `AuditTrailRecord`, `PersistentJobRecord`), automated ERP webhook dispatcher with double-entry journal entries and HMAC-SHA256 signing, split-screen Human-in-the-Loop web dashboard (`/dashboard`) with HTML5 Canvas bounding boxes and real-time accounting balance recalculator, multi-stage production Dockerfile & docker-compose stack (Features 60-65) | M8, M11, M12, M13 | DONE |
 | M15 | Pillar 5 (P2): Worker Pool, Memory Guard & Batch Streaming | Dedicated isolated `OCRProcessPoolExecutor` with thread-safe singleton, non-blocking asyncio bridge (`submit_ocr_async`), process lifecycle recycling (`max_tasks_per_child`), memory guard threshold, NDJSON streaming endpoints (`/api/v1/invoices/batch/stream`, `/api/v1/invoices/batch-dir/stream`), CLI flags (`--max-pages-per-worker`, `--max-worker-memory-mb`), and 50-doc benchmark achieving 4.09x speedup with zero FD leaks (Feature 66) | M8, M12 | DONE |
+| M16 | Goal 1: Zero-Touch Email & Cloud Storage Ingestion | Webhook `/api/v1/ingest/email` (multipart/JSON/RFC 822), SPF/DKIM verification, attachment filter (<10KB logos/signatures), multi-page TIFF support, folder watcher (`FolderWatcher`, `/api/v1/ingest/watcher/scan`), IMAP poller (`ImapPoller`), reverse notifications (Bulgarian email confirmation, Telegram markdown, Slack blocks, ERP webhook) with direct HITL link, ≤ 15s SLA (Feature 67) | M8, M14, M15 | DONE |
 
 ## Interface Contracts
 
@@ -515,3 +517,69 @@ In real-world accounting archives (e.g. `00_РМ_КАСКАДА_2026_ЕООД`),
     - Edge SSL Health Check: `curl -s https://ocr.openbalancer.com/health` returns `status: ok` in < 2ms.
     - Interactive HITL Dashboard: `https://ocr.openbalancer.com/static/index.html` accessible globally over HTTPS.
     - End-to-End Invoice Processing: Successfully uploaded and processed real Bulgarian invoice (`капина-01_page_1_norm.png`), extracting all 6 line items, identifying `Юробанк България АД`, validating Mod-97 IBAN and BIC, and confirming full statutory compliance.
+
+- **Problem #13: Enterprise Zero-Touch Ingestion (Cloudflare Email Worker invoice@incontrolplus.com, Webhooks, IMAP & Folder Watcher)**:
+  - **Context & Motivation**:
+    1. *Multi-Channel Ingestion Demands*: In modern Bulgarian accounting workflows, invoices arrive via diverse paths: direct email attachments from suppliers, local scanner folders, shared cloud storage (Nextcloud/Google Drive), and automated ERP webhooks.
+    2. *Zero-Touch Email Automation*: Accounting teams should not manually download attachments from emails and re-upload them. Forwarding or directly routing to `invoice@incontrolplus.com` or `invoice@openbalancer.com` must autonomously ingest, parse, validate, and index invoices.
+    3. *Security & Filtering Guardrails*: Inbound emails contain irrelevant assets (email signatures, social icons, logos < 10KB, disclaimer PDFs). The system must securely authenticate senders (SPF/DKIM/tokens), filter out garbage attachments, and dispatch reverse confirmation notifications to operators via Telegram, Slack, and ERP webhooks.
+  - **Implemented Architecture**:
+    1. *Cloudflare Email Routing Worker (`cloudflare_worker/email_worker.js`)*:
+       - Serverless edge worker receiving raw email streams at `invoice@incontrolplus.com` and `invoice@openbalancer.com`.
+       - Streams MIME payload directly via multipart/form-data POST to `https://ocr.openbalancer.com/api/v1/ingest/email`.
+       - Passes SPF/DKIM verification headers (`x-email-security-spf`, `x-email-security-dkim`, `x-email-sender`).
+    2. *Email & Ingestion Engine (`invoice_core/email_ingestion.py`)*:
+       - Multi-format parser handling RFC 822 MIME streams, JSON webhooks, and standard multipart uploads.
+       - Token-based webhook authentication (`verify_webhook_token`) and SPF/DKIM validation.
+       - Smart attachment filtering (`filter_attachment`): ignores files < 10KB (`DEFAULT_MIN_ATTACHMENT_SIZE_BYTES`), non-document extensions, and signature images, while processing valid PDF, TIFF, PNG, and JPEG invoices.
+    3. *Reverse Operator Notifications (`invoice_core/notifications.py`)*:
+       - Automated dispatch of processing results to Slack (Block Kit), Telegram (Markdown v2), HTML/plain email confirmations, and outbound webhooks.
+    4. *Folder Watcher & IMAP Polling (`invoice_core/watcher.py` & `invoice_core/imap_poller.py`)*:
+       - Background directory watcher with debounced change detection and automatic archiving into `.processed/`.
+       - IMAP poller for unattended mailbox polling with duplicate detection.
+  - **Verification**:
+    - Live email ingestion verified in production: received and processed invoices forwarded to `invoice@incontrolplus.com` / `invoice@openbalancer.com`.
+    - Automated test suite `tests/test_email_and_cloud_ingestion.py`.
+
+- **Problem #14: Strict Phone Number Disqualification & Dot-Matrix Font Homoglyph Decoder**:
+  - **Context & Motivation**:
+    1. *Phone Number Collision in Pass 3*: In Bulgarian invoice layouts, supplier contact blocks often feature telephone numbers formatted as 10 digits starting with `08` (e.g. `0888979000` under "Телефон"). In previous heuristics, when an invoice lacked a colon or explicit label after "Номер", Pass 3 could erroneously score the mobile phone as the invoice number.
+    2. *Dot-Matrix OCR Degradation*: Invoices printed on needle/matrix printers (e.g. 9-pin/24-pin continuous stationery common in Bulgarian wholesale and retail distribution) exhibit broken character strokes. Tesseract frequently misinterprets numbers as lowercase Latin letters: `n` for `0`, `e` for `6`, `a` for `9`, `c` for `6`. For example, `0000006960` was recognized as `000000ea60` or `000000n960`.
+  - **Implemented Architecture**:
+    1. *Bulgarian Mobile Phone Disqualification (`extract_invoice_number`)*:
+       - Introduced strict disqualification in `invoice_core/extraction.py` for candidates matching Bulgarian mobile prefixes (`087`, `088`, `089`, `+35987`, `+35988`, `+35989`, `0035987`, `0035988`, `0035989`).
+       - Candidate tokens associated with phone labels ("тел", "телефон", "phone", "gsm", "моб") are unconditionally excluded from invoice number selection.
+    2. *Matrix Font Homoglyph Translator (`_decode_dotmatrix_num`)*:
+       - Created specialized dot-matrix character mapper: `n/N -> 0`, `e/E -> 6`, `a/A -> 9`, `c/C -> 6`.
+       - Integrated into vendor profile OCR mappings (`ocr.homoglyphs`) and applied dynamically during invoice number candidates extraction.
+       - Correctly decodes distorted dot-matrix serials (e.g. `000000ea60 -> 0000006960`).
+  - **Verification**:
+    - Dedicated test suite `tests/test_invoice_number_eik_disambiguation.py` (11/11 tests passing).
+    - Production verification on real dot-matrix invoice `01.pdf`: extracted correct invoice number `0000006960` instead of telephone `0888979000`.
+
+- **Problem #15: Reinforcement Learning from Human Feedback (RLHF) & 1-Click HITL Continuous Learning**:
+  - **Context & Motivation**:
+    1. *Operator Efficiency in HITL*: When an operator reviews an invoice in the verification workstation, having to manually type or copy-paste fields slows down throughput. Operators need a single-click interaction to assign any detected bounding box directly to a form field.
+    2. *Continuous Self-Training (RLHF)*: Every manual correction made by a human accountant contains high-value ground truth. Without closed-loop learning, the system repeats the same mistake on the next invoice from the same supplier. The system must self-train from human feedback, deriving layout priors, series patterns, and OCR substitutions automatically.
+  - **Implemented Architecture**:
+    1. *RLHF Feedback Learning Engine (`invoice_core/feedback_learning.py`)*:
+       - `process_human_feedback`: Ingests correction events with token coordinates, page dimensions, raw OCR text, and user-corrected values.
+       - Automatic series pattern derivation: extracts static prefixes (`000000`), expected length (10 digits), regex rules (`^000000\d{4}$`), and sample exemplars.
+       - Spatial bounding box normalization (`normalize_bbox`): computes scale-invariant coordinates `[norm_x, norm_y, norm_w, norm_h]` relative to page dimensions, establishing spatial priors for target fields.
+       - Dot-matrix homoglyph synthesis: automatically deduces vendor-specific character confusion maps from `(raw_token, corrected_value)`.
+       - Dynamic vendor profile generation: compiles and saves learned rules directly to `config/vendors/learned_{eik}.yaml`.
+       - Hot-cache reloading (`reset_vendor_profiles_cache()`): newly learned profiles take effect immediately in memory without container restarts.
+    2. *Extraction Boost via Learned Rules (Pass 0-Learned)*:
+       - In `invoice_core/extraction.py`, `Pass 0-Learned` evaluates candidates against the vendor's learned series pattern (score 260/250) and spatial priors (score 240).
+       - Learned homoglyphs are dynamically applied to raw OCR evidence.
+    3. *Database Persistence & Audit Trail (`database.py`)*:
+       - Created `InvoiceFeedbackRecord` model recording `document_id`, `supplier_eik`, `field_name`, `original_value`, `corrected_value`, `raw_token_text`, `token_bbox_json`, `reward_score`, `actor`, and `details_json`.
+    4. *HITL Dashboard UX (`static/index.html`)*:
+       - Single-click canvas assignment: clicking any detected bounding box transfers text directly into the active field and triggers debounced background RLHF auto-save.
+       - `🎯 1-клик` target selector reticles beside all primary form fields.
+       - Real-time visual feedback: `✓ Запазено & Научено` indicator, animated field flash, and learning toast (`🧠 Обучен RLHF модел: series_prefix:..., spatial_prior:...`).
+       - Header RLHF status badge (`🧠 RLHF: Активно` / `🧠 RLHF: Обучен`) and modal `#learned-rules-modal` displaying learned series, priors, homoglyphs, and recent exemplars.
+  - **Verification**:
+    - Dedicated test suite `tests/test_rlhf_feedback_learning.py` (8/8 tests passing).
+    - Live end-to-end verification on production (`https://ocr.openbalancer.com/dashboard`): 1-click correction on `02.pdf` successfully trained profile `learned_202262252`, hot-reloaded rules, and displayed live in `#learned-rules-modal`.
+

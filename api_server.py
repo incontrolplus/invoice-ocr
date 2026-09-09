@@ -50,11 +50,13 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import pytesseract
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from database import (
     AuditTrailRecord,
     DocumentRecord,
+    InvoiceFeedbackRecord,
     PersistentJobRecord,
     WebhookLogRecord,
     add_audit_entry,
@@ -101,10 +103,37 @@ from webhooks import (
     prepare_webhook_payload,
     send_webhook_async,
 )
+from invoice_core.constants import DEFAULT_MIN_ATTACHMENT_SIZE_BYTES
+from invoice_core.email_ingestion import (
+    EmailAttachment,
+    EmailSecurityResult,
+    ParsedEmail,
+    filter_attachment,
+    parse_cloudflare_worker_json,
+    parse_mime_email,
+    parse_multipart_form_data,
+    verify_webhook_token,
+)
+from invoice_core.notifications import (
+    InvoiceNotificationSummary,
+    dispatch_reverse_notifications_bundle,
+    send_email_confirmation_async,
+    send_slack_notification_async,
+    send_telegram_notification_async,
+)
+from invoice_core.watcher import (
+    FolderWatcher,
+    FolderWatcherConfig,
+)
+from invoice_core.imap_poller import (
+    ImapPoller,
+    ImapPollerConfig,
+)
 
 logger = logging.getLogger("invoice_ocr_api")
 SERVICE_START_TIME = time.time()
 API_VERSION = "1.0.0"
+global_watcher: Optional[FolderWatcher] = None
 
 # Security: Restrict batch-dir and debug-dir paths to allowed roots
 ALLOWED_BATCH_ROOTS = [
@@ -157,8 +186,32 @@ async def lifespan(app: FastAPI):
         )
     except Exception as exc:
         logger.warning("Tesseract startup check warning: %s", exc)
+
+    # Initialize FolderWatcher if enabled via environment
+    global global_watcher
+    watch_dir_env = os.environ.get("WATCH_DIR")
+    if watch_dir_env or os.environ.get("WATCHER_ENABLED", "").lower() in ("1", "true"):
+        w_dir = Path(watch_dir_env or "watch_invoices")
+        cfg = FolderWatcherConfig(
+            watch_dir=w_dir,
+            poll_interval_sec=float(os.environ.get("WATCHER_POLL_INTERVAL_SEC", "2.0")),
+            erp_webhook_url=os.environ.get("WATCHER_WEBHOOK_URL"),
+            telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN"),
+            telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID"),
+            slack_webhook_url=os.environ.get("SLACK_WEBHOOK_URL"),
+            notification_email=os.environ.get("WATCHER_NOTIFICATION_EMAIL"),
+        )
+        global_watcher = FolderWatcher(cfg)
+        global_watcher.start()
+        logger.info("Started automatic FolderWatcher on: %s", w_dir)
+
     yield
-    # Graceful shutdown of worker pool
+
+    # Graceful shutdown of watcher and worker pool
+    if global_watcher and global_watcher.is_running:
+        logger.info("Stopping FolderWatcher...")
+        global_watcher.stop()
+
     logger.info("Shutting down OCR ProcessPoolExecutor...")
     shutdown_ocr_pool(wait=True)
 
@@ -728,6 +781,7 @@ def _dict_to_invoice(data: dict[str, Any]) -> Invoice:
         is_debit_note=bool(meta_d.get("is_debit_note", False)),
         compiled_by=meta_d.get("compiled_by"),
         received_by=meta_d.get("received_by"),
+        currency=meta_d.get("currency") or (fin_d.get("total_amount_due", {}).get("currency") if isinstance(fin_d.get("total_amount_due"), dict) else None),
     )
     supplier = Party(
         name=sup_d.get("name"),
@@ -994,6 +1048,329 @@ async def process_single_invoice(
         tmp_path.unlink(missing_ok=True)
 
 
+# ---------------------------------------------------------------------------
+# Zero-Touch Ingestion Endpoints (Email & Cloud / Folder Watcher)
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/api/v1/ingest/email",
+    summary="Zero-Touch Inbound Email Ingestion Webhook",
+    tags=["Ingestion"],
+)
+async def ingest_email_webhook(
+    request: Request,
+    token: Optional[str] = Query(default=None, description="Optional webhook authorization secret token"),
+    webhook_url: Optional[str] = Query(default=None, description="Optional ERP webhook URL to forward processed data"),
+    require_spf: bool = Query(default=False, description="Require valid SPF pass"),
+    require_dkim: bool = Query(default=False, description="Require valid DKIM pass"),
+    block_spf_fail: bool = Query(default=True, description="Reject incoming emails if SPF explicitly fails"),
+    min_size_bytes: int = Query(default=DEFAULT_MIN_ATTACHMENT_SIZE_BYTES, description="Minimum attachment size in bytes (<10KB filtered out)"),
+    hitl_base_url: Optional[str] = Query(default=None, description="Base URL for HITL dashboard links"),
+    lang: str = Query(default=DEFAULT_OCR_LANG, description="OCR languages"),
+):
+    """Webhook receiver for Cloudflare Email Routing / SendGrid / raw RFC 822 emails.
+
+    - Verifies webhook authorization token (if configured via EMAIL_INGEST_SECRET or WEBHOOK_SECRET)
+    - Validates SPF/DKIM signatures (RFC 8601 Authentication-Results, Received-SPF)
+    - Automatically extracts attached PDF/TIFF/image files
+    - Filters out email signatures, tracking pixels, and logos (< 10KB threshold)
+    - Dispatches attachments to isolated OCR worker pool and persists to database
+    - Generates and dispatches reverse notification (Email confirmation, Telegram, Slack, ERP Webhook)
+      with Supplier, Amount, VAT, Status, and direct HITL dashboard link
+    """
+    # 1. Authorization check
+    auth_header = request.headers.get("X-Ingest-Token") or request.headers.get("X-Webhook-Secret")
+    if not auth_header and "authorization" in request.headers:
+        bearer = request.headers["authorization"].split()
+        if len(bearer) == 2 and bearer[0].lower() == "bearer":
+            auth_header = bearer[1]
+    provided_token = token or auth_header
+
+    configured_secret = os.environ.get("EMAIL_INGEST_SECRET") or os.environ.get("WEBHOOK_SECRET")
+    if configured_secret:
+        if not provided_token or not verify_webhook_token(provided_token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: invalid or missing ingest webhook token",
+            )
+
+    # 2. Parse incoming payload
+    content_type = request.headers.get("content-type", "").lower()
+    parsed_email: Optional[ParsedEmail] = None
+
+    try:
+        if "application/json" in content_type:
+            json_body = await request.json()
+            parsed_email = parse_cloudflare_worker_json(
+                json_body,
+                require_spf=require_spf,
+                require_dkim=require_dkim,
+                block_spf_fail=block_spf_fail,
+                min_size_bytes=min_size_bytes,
+            )
+        elif "multipart/form-data" in content_type:
+            form = await request.form()
+            form_fields: dict[str, Any] = {}
+            form_files: list[tuple[str, str, bytes, str]] = []
+            for k, v in form.multi_items():
+                if hasattr(v, "read") and hasattr(v, "filename"):
+                    data = await v.read()
+                    form_files.append((k, v.filename or k, data, getattr(v, "content_type", None) or "application/octet-stream"))
+                else:
+                    form_fields[k] = v
+            parsed_email = parse_multipart_form_data(
+                form_fields=form_fields,
+                form_files=form_files,
+                require_spf=require_spf,
+                require_dkim=require_dkim,
+                block_spf_fail=block_spf_fail,
+                min_size_bytes=min_size_bytes,
+            )
+        else:
+            raw_body = await request.body()
+            parsed_email = parse_mime_email(
+                raw_body,
+                require_spf=require_spf,
+                require_dkim=require_dkim,
+                block_spf_fail=block_spf_fail,
+                min_size_bytes=min_size_bytes,
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed parsing email payload: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Malformed email payload: {exc}",
+        )
+
+    # 3. Security evaluation (SPF / DKIM)
+    if not parsed_email.security.is_authorized:
+        logger.warning(
+            "Rejected email from '%s': %s (verdict: %s)",
+            parsed_email.sender, parsed_email.security.details, parsed_email.security.security_verdict,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "Email security verification failed",
+                "security": parsed_email.security.to_dict(),
+                "verdict": parsed_email.security.security_verdict,
+                "message": parsed_email.security.details,
+            },
+        )
+
+    # 4. Filtered attachments check
+    if len(parsed_email.valid_attachments) == 0:
+        logger.info(
+            "Email from '%s' had no valid invoice attachments (%d filtered)",
+            parsed_email.sender, len(parsed_email.filtered_attachments),
+        )
+        return {
+            "status": "no_invoices_found",
+            "message": "No valid invoice candidate attachments found in email. Filtered out spam/logos/signatures (< 10KB) or non-document files.",
+            "email_metadata": {
+                "sender": parsed_email.sender,
+                "recipient": parsed_email.recipient,
+                "subject": parsed_email.subject,
+                "date": parsed_email.date,
+                "message_id": parsed_email.message_id,
+                "spf": parsed_email.security.spf_status,
+                "dkim": parsed_email.security.dkim_status,
+            },
+            "security": parsed_email.security.to_dict(),
+            "total_attachments": len(parsed_email.all_attachments),
+            "filtered_attachments": [a.to_dict() for a in parsed_email.filtered_attachments],
+            "invoices_processed": 0,
+            "results": [],
+        }
+
+    # 5. Process valid candidate attachments
+    results = []
+    pool = get_ocr_pool()
+
+    for att in parsed_email.valid_attachments:
+        suffix = Path(att.filename).suffix.lower() or ".pdf"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_file:
+            tmp_file.write(att.data)
+            tmp_path = Path(tmp_file.name)
+
+        try:
+            t0 = time.perf_counter()
+            res = await pool.submit_ocr_async(
+                file_path=tmp_path,
+                lang=lang,
+                use_cache=True,
+                return_invoice_object=True,
+            )
+            proc_time = time.perf_counter() - t0
+            if res.get("status") != "success" or res.get("invoice") is None:
+                raise ValueError(f"OCR processing failed: {res.get('error')}")
+
+            inv = res["invoice"]
+            full_res = _invoice_to_dict(inv, include_raw_evidence=True)
+            full_res["file_name"] = att.filename
+            full_res["source_channel"] = "email"
+            full_res["email_metadata"] = {
+                "sender": parsed_email.sender,
+                "recipient": parsed_email.recipient,
+                "subject": parsed_email.subject,
+                "date": parsed_email.date,
+                "message_id": parsed_email.message_id,
+                "spf": parsed_email.security.spf_status,
+                "dkim": parsed_email.security.dkim_status,
+            }
+
+            doc_id = uuid.uuid4().hex
+            with get_db_session() as db:
+                doc_rec = save_document_to_db(
+                    db=db,
+                    doc_id=doc_id,
+                    file_name=att.filename,
+                    source_path=tmp_path,
+                    ocr_result=full_res,
+                    processing_time=proc_time,
+                    webhook_url=webhook_url,
+                )
+                saved_dict = doc_rec.to_dict()
+
+            # Reverse notification delivery
+            notif_res = await dispatch_reverse_notifications_bundle(
+                doc_dict=saved_dict,
+                sender_email=parsed_email.sender,
+                erp_webhook_url=webhook_url,
+                hitl_base_url=hitl_base_url,
+            )
+
+            results.append({
+                "document_id": doc_id,
+                "file_name": att.filename,
+                "invoice_number": saved_dict.get("invoice_number"),
+                "supplier_name": saved_dict.get("supplier_name"),
+                "supplier_eik": saved_dict.get("supplier_eik"),
+                "tax_base": saved_dict.get("tax_base"),
+                "vat_amount": saved_dict.get("vat_amount"),
+                "total_amount": saved_dict.get("total_amount"),
+                "currency": saved_dict.get("currency"),
+                "status": saved_dict.get("status"),
+                "is_valid": saved_dict.get("is_valid"),
+                "error_count": saved_dict.get("error_count", 0),
+                "warning_count": saved_dict.get("warning_count", 0),
+                "processing_time_sec": round(proc_time, 2),
+                "hitl_url": notif_res.get("summary", {}).get("hitl_url", f"http://localhost:8000/dashboard?doc_id={doc_id}"),
+                "notifications": notif_res,
+            })
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    return {
+        "status": "success",
+        "email_metadata": {
+            "sender": parsed_email.sender,
+            "recipient": parsed_email.recipient,
+            "subject": parsed_email.subject,
+            "date": parsed_email.date,
+            "message_id": parsed_email.message_id,
+            "spf": parsed_email.security.spf_status,
+            "dkim": parsed_email.security.dkim_status,
+        },
+        "security": parsed_email.security.to_dict(),
+        "total_attachments": len(parsed_email.all_attachments),
+        "filtered_attachments": [a.to_dict() for a in parsed_email.filtered_attachments],
+        "invoices_processed": len(results),
+        "results": results,
+    }
+
+
+@app.post(
+    "/api/v1/ingest/watcher/scan",
+    summary="Trigger Folder Watcher Scan",
+    tags=["Ingestion"],
+)
+async def trigger_watcher_scan(
+    watch_dir: Optional[str] = Query(default=None, description="Custom directory to scan"),
+    erp_webhook_url: Optional[str] = Query(default=None, description="Optional ERP webhook URL"),
+):
+    """Immediately scan the watch directory and process all ready invoices."""
+    target_dir = Path(watch_dir or os.environ.get("WATCH_DIR") or "watch_invoices")
+    if not target_dir.exists():
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+    cfg = FolderWatcherConfig(
+        watch_dir=target_dir,
+        debounce_delay_sec=0.0,
+        erp_webhook_url=erp_webhook_url,
+    )
+    watcher = FolderWatcher(cfg)
+    results = await run_in_threadpool(watcher.scan_once)
+    return {
+        "watch_dir": str(target_dir),
+        "processed_count": len(results),
+        "results": results,
+    }
+
+
+@app.get(
+    "/api/v1/ingest/watcher/status",
+    summary="Get Folder Watcher Status",
+    tags=["Ingestion"],
+)
+async def get_watcher_status():
+    """Get the current operational status of the background folder watcher."""
+    global global_watcher
+    if global_watcher:
+        return {
+            "is_running": global_watcher.is_running,
+            "watch_dir": str(global_watcher.watch_dir),
+            "processed_dir": str(global_watcher.processed_dir),
+            "failed_dir": str(global_watcher.failed_dir),
+            "processed_count": global_watcher.processed_count,
+            "failed_count": global_watcher.failed_count,
+        }
+    return {
+        "is_running": False,
+        "watch_dir": str(os.environ.get("WATCH_DIR", "watch_invoices")),
+        "message": "Watcher is not running as a background task. Trigger via /api/v1/ingest/watcher/scan or enable WATCHER_ENABLED=1.",
+    }
+
+
+@app.post(
+    "/api/v1/ingest/imap/poll",
+    summary="Trigger IMAP Inbox Poll",
+    tags=["Ingestion"],
+)
+async def trigger_imap_poll(
+    host: Optional[str] = Query(default=None, description="IMAP server host"),
+    username: Optional[str] = Query(default=None, description="IMAP username"),
+    password: Optional[str] = Query(default=None, description="IMAP password"),
+    mailbox: str = Query(default="INBOX", description="Mailbox name"),
+):
+    """Trigger an immediate IMAP poll cycle for unread invoice emails."""
+    imap_host = host or os.environ.get("IMAP_HOST", "")
+    imap_user = username or os.environ.get("IMAP_USER", "")
+    imap_pass = password or os.environ.get("IMAP_PASSWORD", "")
+
+    if not imap_host or not imap_user or not imap_pass:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="IMAP host, username, and password must be configured or passed as parameters.",
+        )
+
+    cfg = ImapPollerConfig(
+        host=imap_host,
+        username=imap_user,
+        password=imap_pass,
+        mailbox=mailbox,
+    )
+    poller = ImapPoller(cfg)
+    results = await run_in_threadpool(poller.poll_once)
+    return {
+        "mailbox": mailbox,
+        "processed_count": len(results),
+        "results": results,
+    }
+
+
 async def _stream_uploaded_batch_generator(
     tmp_in: Path,
     tmp_out: Path,
@@ -1063,7 +1440,11 @@ async def _stream_uploaded_batch_generator(
                     }
                     doc_entry["is_valid"] = inv.validation.is_valid
                     tot = inv.financial_summary.total_amount_due.amount
-                    curr = inv.financial_summary.total_amount_due.currency or "BGN"
+                    curr = (
+                        inv.financial_summary.total_amount_due.currency
+                        or getattr(inv.invoice_metadata, "currency", None)
+                        or ("EUR" if str(inv.invoice_metadata.date_issued or "") >= "2026-01-01" else "BGN")
+                    )
                     doc_entry["total_amount_due"] = str(tot) if tot is not None else None
                     doc_entry["currency"] = curr
 
@@ -1152,7 +1533,11 @@ async def _stream_directory_batch_generator(
                 }
                 doc_entry["is_valid"] = inv.validation.is_valid
                 tot = inv.financial_summary.total_amount_due.amount
-                curr = inv.financial_summary.total_amount_due.currency or "BGN"
+                curr = (
+                    inv.financial_summary.total_amount_due.currency
+                    or getattr(inv.invoice_metadata, "currency", None)
+                    or ("EUR" if str(inv.invoice_metadata.date_issued or "") >= "2026-01-01" else "BGN")
+                )
                 doc_entry["total_amount_due"] = str(tot) if tot is not None else None
                 doc_entry["currency"] = curr
 
@@ -2380,7 +2765,7 @@ async def get_document_file(document_id: str, db: Session = Depends(get_db)):
 @app.post(
     "/api/v1/documents/{document_id}/correct",
     tags=["Documents"],
-    summary="Save Manual Field Corrections (HITL)",
+    summary="Save Manual Field Corrections (HITL) with RLHF Learning",
 )
 async def correct_document_fields(
     document_id: str,
@@ -2388,12 +2773,17 @@ async def correct_document_fields(
     actor: str = Query(default="accountant", description="Accountant identifier"),
     db: Session = Depends(get_db),
 ):
-    """Apply manual corrections made by accountant and log changes into the immutable audit trail."""
+    """Apply manual corrections made by accountant, trigger RLHF layout & vendor learning, and log changes into the immutable audit trail."""
+    meta = {}
+    if isinstance(corrections, dict) and "feedback_metadata" in corrections:
+        meta = corrections.pop("feedback_metadata") or {}
+
     record = update_document_corrections(
         db=db,
         doc_id=document_id,
         corrections=corrections,
         actor=actor,
+        feedback_metadata=meta,
     )
     if not record:
         raise HTTPException(
@@ -2401,6 +2791,43 @@ async def correct_document_fields(
             detail=f"Document '{document_id}' not found",
         )
     return record.to_dict()
+
+
+@app.get(
+    "/api/v1/feedback/stats",
+    tags=["Feedback & RLHF"],
+    summary="Get RLHF Feedback & Learning Metrics",
+)
+async def get_rlhf_feedback_stats(db: Session = Depends(get_db)):
+    """Retrieve operational statistics of the continuous RLHF learning engine."""
+    from invoice_core.feedback_learning import get_feedback_statistics
+    return get_feedback_statistics(db)
+
+
+@app.get(
+    "/api/v1/vendors/{identifier}/learned-rules",
+    tags=["Feedback & RLHF"],
+    summary="Get Learned Profile Rules for a Vendor",
+)
+async def get_vendor_learned_rules(
+    identifier: str,
+    db: Session = Depends(get_db),
+):
+    """Retrieve learned series patterns, spatial priors, and recent correction exemplars for a vendor."""
+    from invoice_core.vendor_profiles import get_vendor_profile
+    clean_id = re.sub(r"\D", "", str(identifier).strip()) or identifier.strip().lower()
+    prof = get_vendor_profile(clean_id) or get_vendor_profile(identifier)
+
+    exemplars = db.query(InvoiceFeedbackRecord).filter(
+        (InvoiceFeedbackRecord.supplier_eik == clean_id) | (InvoiceFeedbackRecord.supplier_eik == identifier)
+    ).order_by(desc(InvoiceFeedbackRecord.created_at)).limit(20).all()
+
+    return {
+        "identifier": identifier,
+        "profile": prof or {},
+        "exemplars_count": len(exemplars),
+        "recent_exemplars": [e.to_dict() for e in exemplars],
+    }
 
 
 @app.post(
@@ -2856,7 +3283,12 @@ def _format_smartscan_response(inv: Invoice, raw_text: str = "") -> dict[str, An
     elif subtotal == 0.0 and total_amount > 0:
         subtotal = round(total_amount - tax_amount, 2)
 
-    cur = (inv.financial_summary.total_amount_due.currency if inv.financial_summary.total_amount_due else None) or "BGN"
+    cur = (
+        (inv.financial_summary.total_amount_due.currency if inv.financial_summary.total_amount_due else None)
+        or (inv.financial_summary.tax_base.currency if inv.financial_summary.tax_base else None)
+        or getattr(inv.invoice_metadata, "currency", None)
+        or ("EUR" if str(inv.invoice_metadata.date_issued or "") >= "2026-01-01" else "BGN")
+    )
 
     sup_vat = inv.supplier.vat_number
     if not sup_vat and inv.supplier.eik:

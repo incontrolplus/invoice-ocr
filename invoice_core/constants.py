@@ -28,8 +28,13 @@ KNOWN_TESSDATA_LOCATIONS: tuple[Path, ...] = (
 )
 
 PDF_EXTENSIONS: set[str] = {".pdf"}
-IMAGE_EXTENSIONS: set[str] = {".png", ".jpg", ".jpeg"}
-SUPPORTED_EXTENSIONS: set[str] = {".pdf", ".png", ".jpg", ".jpeg"}
+TIFF_EXTENSIONS: set[str] = {".tiff", ".tif"}
+IMAGE_EXTENSIONS: set[str] = {".png", ".jpg", ".jpeg", ".tiff", ".tif"}
+SUPPORTED_EXTENSIONS: set[str] = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif"}
+
+# Ingestion & email attachment constants
+DEFAULT_MIN_ATTACHMENT_SIZE_BYTES: int = int(os.environ.get("MIN_ATTACHMENT_SIZE_BYTES", "10240"))  # 10 KB
+DEFAULT_HITL_BASE_URL: str = os.environ.get("HITL_BASE_URL", "http://localhost:8000")
 
 # Default rasterization resolution (empirically optimized for Tesseract)
 DEFAULT_RASTER_DPI: int = 300

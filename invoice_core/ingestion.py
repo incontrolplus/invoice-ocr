@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import logging
 import os
+import io
 from pathlib import Path
-from typing import Generator, Iterator
+from typing import Any, Generator, Iterator
 
 import cv2
 import numpy as np
@@ -22,6 +23,7 @@ from .constants import (
     IMAGE_EXTENSIONS,
     PDF_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
+    TIFF_EXTENSIONS,
 )
 from .models import PageImage
 
@@ -126,8 +128,41 @@ def rasterize_pdf(path: Path | str, dpi: int = DEFAULT_RASTER_DPI) -> list[PageI
     return list(iter_rasterize_pdf(path, dpi=dpi))
 
 
+def iter_rasterize_tiff(path: Path | str) -> Generator[PageImage, None, None]:
+    """Stream pages of a (single or multi-page) TIFF document using PIL.
+
+    Yields:
+        PageImage: One page at a time with image: np.ndarray (BGR), width, height.
+    """
+    path = Path(path)
+    try:
+        pil_img = Image.open(str(path))
+    except Exception as exc:
+        raise ValueError(f"Failed to open TIFF document: {path} ({exc})") from exc
+
+    try:
+        n_frames = getattr(pil_img, "n_frames", 1)
+        logger.info("Streaming rasterization of TIFF: %s (%d page(s))", path.name, n_frames)
+        for idx in range(n_frames):
+            try:
+                pil_img.seek(idx)
+                rgb = pil_img.convert("RGB")
+                bgr = cv2.cvtColor(np.array(rgb), cv2.COLOR_RGB2BGR)
+                h, w = bgr.shape[:2]
+                yield PageImage(
+                    page_number=idx + 1,
+                    image=bgr,
+                    width=w,
+                    height=h,
+                )
+            except Exception as frame_exc:
+                raise ValueError(f"Failed to decode TIFF frame {idx} in {path}: {frame_exc}") from frame_exc
+    finally:
+        pil_img.close()
+
+
 def load_image_page(path: Path | str) -> PageImage:
-    """Load a single image file (.png, .jpg, .jpeg) into a PageImage using imdecode for Cyrillic path safety."""
+    """Load a single image file (.png, .jpg, .jpeg, .tiff, .tif) into a PageImage."""
     path = Path(path)
     try:
         data = path.read_bytes()
@@ -140,7 +175,11 @@ def load_image_page(path: Path | str) -> PageImage:
     arr = np.frombuffer(data, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
-        raise ValueError(f"Failed to decode image file: {path}")
+        try:
+            pil_img = Image.open(io.BytesIO(data))
+            img = cv2.cvtColor(np.array(pil_img.convert("RGB")), cv2.COLOR_RGB2BGR)
+        except Exception:
+            raise ValueError(f"Failed to decode image file: {path}")
 
     h, w = img.shape[:2]
     logger.info("Loaded image: %s (%dx%d)", path.name, w, h)
@@ -156,7 +195,7 @@ def iter_document(
     path: Path | str,
     dpi: int = DEFAULT_RASTER_DPI,
 ) -> Generator[PageImage, None, None]:
-    """Unified document streaming generator supporting PDF, PNG, JPG, and JPEG.
+    """Unified document streaming generator supporting PDF, TIFF, PNG, JPG, and JPEG.
 
     Yields PageImage objects one-by-one to ensure O(1) memory overhead.
 
@@ -177,6 +216,8 @@ def iter_document(
 
     if suffix in PDF_EXTENSIONS:
         return iter_rasterize_pdf(path, dpi=dpi)
+    elif suffix in TIFF_EXTENSIONS:
+        return iter_rasterize_tiff(path)
     elif suffix in IMAGE_EXTENSIONS:
         def _single_page():
             yield load_image_page(path)

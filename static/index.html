@@ -621,7 +621,141 @@
       align-items: center;
       gap: 0.5rem;
     }
-    #toast.show { transform: translateY(0); opacity: 1; }
+    /* RLHF Learning & 1-Click UI */
+    .rlhf-pill {
+      font-size: 0.72rem;
+      font-weight: 700;
+      padding: 0.22rem 0.65rem;
+      border-radius: 9999px;
+      background: #f0fdf4;
+      color: #15803d;
+      border: 1px solid #86efac;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      transition: all 0.15s;
+      user-select: none;
+    }
+    .rlhf-pill:hover {
+      background: #dcfce7;
+      border-color: #4ade80;
+      transform: translateY(-1px);
+    }
+    .rlhf-pill.rlhf-learned {
+      background: #eff6ff;
+      color: #1d4ed8;
+      border-color: #93c5fd;
+    }
+    .field-pick-btn {
+      background: #f1f5f9;
+      border: 1px solid var(--border);
+      border-radius: 0.25rem;
+      cursor: pointer;
+      font-size: 0.68rem;
+      color: var(--primary);
+      padding: 0.1rem 0.35rem;
+      margin-left: 0.4rem;
+      transition: all 0.15s;
+    }
+    .field-pick-btn:hover {
+      background: #dbeafe;
+      border-color: var(--primary);
+      color: var(--primary);
+    }
+    .auto-save-indicator {
+      font-size: 0.72rem;
+      color: #059669;
+      display: none;
+      align-items: center;
+      gap: 0.25rem;
+      font-weight: 600;
+    }
+    .auto-save-indicator.active {
+      display: inline-flex;
+    }
+    .auto-save-indicator.saving {
+      color: #d97706;
+    }
+
+    /* Learned Rules Modal */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(2px);
+      z-index: 1000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .modal-overlay.active {
+      display: flex;
+    }
+    .modal-card {
+      background: #fff;
+      border-radius: 0.6rem;
+      width: 100%;
+      max-width: 650px;
+      max-height: 85vh;
+      overflow-y: auto;
+      box-shadow: 0 20px 25px -5px rgba(0,0,0,0.3);
+      border: 1px solid var(--border);
+      padding: 1.5rem;
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.75rem;
+      margin-bottom: 1rem;
+    }
+    .modal-header h3 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .modal-close-btn {
+      background: none;
+      border: none;
+      font-size: 1.2rem;
+      cursor: pointer;
+      color: var(--text-muted);
+      font-weight: 700;
+    }
+    .modal-close-btn:hover {
+      color: var(--text);
+    }
+    .rule-box {
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 0.4rem;
+      padding: 0.75rem 1rem;
+      margin-bottom: 0.75rem;
+      font-size: 0.8rem;
+    }
+    .rule-box h4 {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 0.35rem;
+    }
+    .rule-badge {
+      display: inline-block;
+      font-size: 0.72rem;
+      padding: 0.15rem 0.45rem;
+      border-radius: 0.25rem;
+      background: #e0f2fe;
+      color: #0369a1;
+      font-weight: 600;
+      margin-right: 0.3rem;
+      margin-bottom: 0.3rem;
+    }
   </style>
 </head>
 <body>
@@ -713,7 +847,11 @@
           <h2 id="doc-filename">Няма избран документ</h2>
           <p id="doc-meta-sub">Качете или изберете фактура за преглед</p>
         </div>
-        <span id="doc-status-pill" class="status-pill status-completed">COMPLETED</span>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <span id="auto-save-indicator" class="auto-save-indicator">✓ Запазено</span>
+          <span id="rlhf-badge" class="rlhf-pill" onclick="openLearnedRulesModal()" title="Кликнете за преглед на научените правила за този доставчик">🧠 RLHF: Активно</span>
+          <span id="doc-status-pill" class="status-pill status-completed">COMPLETED</span>
+        </div>
       </div>
 
       <!-- Top Validation Banner -->
@@ -778,7 +916,7 @@
         <div class="section-title">1. Основни реквизити на фактурата</div>
         <div class="form-grid">
           <div class="form-group">
-            <label for="inp-invoice-number">Номер на фактура (10 цифри)</label>
+            <label for="inp-invoice-number">Номер на фактура (10 цифри) <button type="button" class="field-pick-btn" title="Активирай за 1-клик попълване от фактурата" onclick="setActiveTargetFieldById('inp-invoice-number')">🎯 1-клик</button></label>
             <input type="text" id="inp-invoice-number" oninput="onFieldChanged()" onfocus="onInputFocused(this)">
           </div>
           <div class="form-group">
@@ -789,11 +927,11 @@
             </select>
           </div>
           <div class="form-group">
-            <label for="inp-date-issued">Дата на издаване</label>
+            <label for="inp-date-issued">Дата на издаване <button type="button" class="field-pick-btn" title="Активирай за 1-клик попълване от фактурата" onclick="setActiveTargetFieldById('inp-date-issued')">🎯 1-клик</button></label>
             <input type="date" id="inp-date-issued" onchange="onFieldChanged()" onfocus="onInputFocused(this)">
           </div>
           <div class="form-group">
-            <label for="inp-date-tax-event">Дата на данъчно събитие</label>
+            <label for="inp-date-tax-event">Дата на данъчно събитие <button type="button" class="field-pick-btn" title="Активирай за 1-клик попълване от фактурата" onclick="setActiveTargetFieldById('inp-date-tax-event')">🎯 1-клик</button></label>
             <input type="date" id="inp-date-tax-event" onchange="onFieldChanged()" onfocus="onInputFocused(this)">
           </div>
         </div>
@@ -805,20 +943,20 @@
         </div>
         <div class="form-grid">
           <div class="form-group full-width">
-            <label for="inp-supplier-name">Наименование на фирмата</label>
+            <label for="inp-supplier-name">Наименование на фирмата <button type="button" class="field-pick-btn" title="Активирай за 1-клик попълване от фактурата" onclick="setActiveTargetFieldById('inp-supplier-name')">🎯 1-клик</button></label>
             <input type="text" id="inp-supplier-name" oninput="onFieldChanged()" onfocus="onInputFocused(this)">
           </div>
           <div class="form-group">
-            <label for="inp-supplier-eik">ЕИК / БУЛСТАТ</label>
+            <label for="inp-supplier-eik">ЕИК / БУЛСТАТ <button type="button" class="field-pick-btn" title="Активирай за 1-клик попълване от фактурата" onclick="setActiveTargetFieldById('inp-supplier-eik')">🎯 1-клик</button></label>
             <input type="text" id="inp-supplier-eik" oninput="checkEikModulo11(this.value); onFieldChanged()" onfocus="onInputFocused(this)">
             <span class="error-inline-msg" id="eik-error-msg">⚠️ Задължителен реквизит по чл. 114, ал. 1, т. 2 ЗДДС</span>
           </div>
           <div class="form-group">
-            <label for="inp-supplier-vat">ДДС номер</label>
+            <label for="inp-supplier-vat">ДДС номер <button type="button" class="field-pick-btn" title="Активирай за 1-клик попълване от фактурата" onclick="setActiveTargetFieldById('inp-supplier-vat')">🎯 1-клик</button></label>
             <input type="text" id="inp-supplier-vat" oninput="onFieldChanged()" onfocus="onInputFocused(this)">
           </div>
           <div class="form-group full-width">
-            <label for="inp-supplier-address">Адрес на управление</label>
+            <label for="inp-supplier-address">Адрес на управление <button type="button" class="field-pick-btn" title="Активирай за 1-клик попълване от фактурата" onclick="setActiveTargetFieldById('inp-supplier-address')">🎯 1-клик</button></label>
             <input type="text" id="inp-supplier-address" oninput="onFieldChanged()" onfocus="onInputFocused(this)">
           </div>
         </div>
@@ -854,15 +992,15 @@
         </div>
         <div class="form-grid">
           <div class="form-group">
-            <label for="inp-tax-base">Данъчна основа</label>
+            <label for="inp-tax-base">Данъчна основа <button type="button" class="field-pick-btn" title="Активирай за 1-клик попълване от фактурата" onclick="setActiveTargetFieldById('inp-tax-base')">🎯 1-клик</button></label>
             <input type="number" step="0.01" id="inp-tax-base" oninput="onMoneyChanged()" onfocus="onInputFocused(this)">
           </div>
           <div class="form-group">
-            <label for="inp-vat-amount">Начислен ДДС (20%)</label>
+            <label for="inp-vat-amount">Начислен ДДС (20%) <button type="button" class="field-pick-btn" title="Активирай за 1-клик попълване от фактурата" onclick="setActiveTargetFieldById('inp-vat-amount')">🎯 1-клик</button></label>
             <input type="number" step="0.01" id="inp-vat-amount" oninput="onMoneyChanged()" onfocus="onInputFocused(this)">
           </div>
           <div class="form-group full-width">
-            <label for="inp-total-amount">Обща сума за плащане</label>
+            <label for="inp-total-amount">Обща сума за плащане <button type="button" class="field-pick-btn" title="Активирай за 1-клик попълване от фактурата" onclick="setActiveTargetFieldById('inp-total-amount')">🎯 1-клик</button></label>
             <input type="number" step="0.01" id="inp-total-amount" oninput="onMoneyChanged()" onfocus="onInputFocused(this)" style="font-weight: 700; font-size: 0.95rem;">
             <span class="error-inline-msg" id="math-error-msg">❌ Чл. 26 ЗДДС: Данъчна основа + ДДС трябва да е равно на Общата сума!</span>
           </div>
@@ -1065,7 +1203,8 @@
 
       // Metadata inputs
       document.getElementById("inp-invoice-number").value = meta.invoice_number || doc.invoice_number || "";
-      document.getElementById("inp-currency").value = doc.currency || meta.currency || "BGN";
+      const detectedCurrency = doc.currency || meta.currency || fin.currency || (fin.total_amount_due && fin.total_amount_due.currency) || ((meta.date_issued || doc.date_issued || "") >= "2026-01-01" ? "EUR" : "BGN");
+      document.getElementById("inp-currency").value = detectedCurrency;
       document.getElementById("inp-date-issued").value = meta.date_issued || doc.date_issued || "";
       document.getElementById("inp-date-tax-event").value = meta.date_tax_event || doc.date_tax_event || "";
 
@@ -1090,6 +1229,23 @@
 
       // Trigger full validation & balance calculation
       recalculateAllValidations();
+
+      // Check and display RLHF status for this supplier
+      const cleanEik = (eik || "").replace(/\D/g, "");
+      if (cleanEik) {
+        fetch(`/api/v1/vendors/${cleanEik}/learned-rules`)
+          .then(r => r.json())
+          .then(res => {
+            if (res.profile && res.profile.id) {
+              updateRlhfBadge({ vendor_id: res.profile.id });
+            } else {
+              updateRlhfBadge(null);
+            }
+          })
+          .catch(() => updateRlhfBadge(null));
+      } else {
+        updateRlhfBadge(null);
+      }
     }
 
     function renderLineItemsTable(items) {
@@ -1484,7 +1640,7 @@
         // If an input is currently selected or focused, fill it directly!
         const targetInput = document.getElementById(activeTargetInputId) || document.activeElement;
         if (targetInput && (targetInput.tagName === "INPUT" || targetInput.tagName === "SELECT")) {
-          applyValueToInput(targetInput, clickedToken.text);
+          applyValueToInput(targetInput, clickedToken.text, clickedToken);
           closeBoxPopover();
         } else {
           // Open quick-assignment popover at click coordinates
@@ -1545,7 +1701,26 @@
       return inp.id || "Поле";
     }
 
-    function applyValueToInput(inputElem, text) {
+    function mapInputIdToField(id) {
+      const map = {
+        "inp-invoice-number": "invoice_number",
+        "inp-currency": "currency",
+        "inp-date-issued": "date_issued",
+        "inp-date-tax-event": "date_tax_event",
+        "inp-supplier-name": "supplier_name",
+        "inp-supplier-eik": "supplier_eik",
+        "inp-supplier-vat": "supplier_vat",
+        "inp-supplier-address": "supplier_address",
+        "inp-tax-base": "tax_base",
+        "inp-vat-amount": "vat_amount",
+        "inp-total-amount": "total_amount",
+      };
+      return map[id] || id.replace("inp-", "").replace(/-/g, "_");
+    }
+
+    let autoSaveTimer = null;
+
+    function applyValueToInput(inputElem, text, tokenObj = null) {
       let val = text.trim();
       
       // Smart value filtering based on field type
@@ -1558,19 +1733,193 @@
         val = val.replace(/[^\w\d]/g, "");
       }
 
+      const oldVal = inputElem.value;
       inputElem.value = val;
       inputElem.classList.remove("flash-highlight");
       void inputElem.offsetWidth; // trigger reflow
       inputElem.classList.add("flash-highlight");
 
       const label = getFieldLabel(inputElem);
-      showToast(`🎯 Попълнено в "${label}": "${val}"`);
+      showToast(`🎯 1-клик попълване: "${label}" -> "${val}"`);
 
       // Recalculate
       if (inputElem.id === "inp-supplier-eik") {
         checkEikModulo11(val);
       }
       recalculateAllValidations();
+
+      // Trigger automatic debounced save & RLHF feedback learning!
+      autoSaveWithFeedback(inputElem.id, oldVal, val, tokenObj);
+    }
+
+    async function autoSaveWithFeedback(inputId, oldVal, newVal, tokenObj = null) {
+      if (!currentDocId) return;
+
+      const indicator = document.getElementById("auto-save-indicator");
+      if (indicator) {
+        indicator.innerText = "⏳ Запазване...";
+        indicator.classList.remove("saving");
+        indicator.classList.add("active", "saving");
+      }
+
+      clearTimeout(autoSaveTimer);
+      autoSaveTimer = setTimeout(async () => {
+        try {
+          const payload = collectFormData();
+          const fieldName = mapInputIdToField(inputId);
+          payload.feedback_metadata = {
+            field_name: fieldName,
+            old_value: oldVal,
+            new_value: newVal,
+            raw_token_text: tokenObj ? tokenObj.text : null,
+            token_bbox: tokenObj ? tokenObj.bbox : null,
+            page_width: naturalWidth || 2480,
+            page_height: naturalHeight || 3508,
+            source: tokenObj ? "canvas_click" : "manual_input"
+          };
+
+          const resp = await fetch(`/api/v1/documents/${currentDocId}/correct`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (!resp.ok) throw new Error("Грешка при запис");
+          const result = await resp.json();
+
+          if (indicator) {
+            indicator.innerText = "✓ Запазено & Научено";
+            indicator.classList.remove("saving");
+            setTimeout(() => indicator.classList.remove("active"), 2500);
+          }
+
+          if (result.feedback_learning && result.feedback_learning.status === "learned") {
+            const rulesStr = result.feedback_learning.rules_updated.join(", ") || "правило за доставчик";
+            showToast(`🧠 Обучен RLHF модел: ${rulesStr}!`);
+            updateRlhfBadge(result.feedback_learning);
+          }
+
+          fetchAuditTrail(currentDocId);
+          fetchDocumentsList();
+        } catch (err) {
+          console.error("Auto-save error:", err);
+          if (indicator) {
+            indicator.innerText = "❌ Грешка при запис";
+            setTimeout(() => indicator.classList.remove("active"), 3000);
+          }
+        }
+      }, 350);
+    }
+
+    function updateRlhfBadge(learningData) {
+      const badge = document.getElementById("rlhf-badge");
+      if (!badge) return;
+      if (learningData && learningData.vendor_id) {
+        badge.innerHTML = `🧠 RLHF: Обучен (${learningData.vendor_id})`;
+        badge.className = "rlhf-pill rlhf-learned";
+      } else {
+        badge.innerHTML = `🧠 RLHF: Активно`;
+        badge.className = "rlhf-pill";
+      }
+    }
+
+    async function openLearnedRulesModal() {
+      const eik = document.getElementById("inp-supplier-eik").value.trim();
+      const modal = document.getElementById("learned-rules-modal");
+      if (!modal) return;
+      modal.classList.add("active");
+      const content = document.getElementById("learned-rules-content");
+      content.innerHTML = `<p style="color:var(--text-muted); padding:1rem 0;">⏳ Зареждане на научените правила...</p>`;
+
+      try {
+        const url = eik ? `/api/v1/vendors/${eik}/learned-rules` : `/api/v1/feedback/stats`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        renderLearnedRulesModalContent(data, eik);
+      } catch (err) {
+        content.innerHTML = `<p style="color:var(--danger); padding:1rem 0;">❌ Грешка при зареждане: ${escapeHtml(err.message)}</p>`;
+      }
+    }
+
+    function closeLearnedRulesModal() {
+      const modal = document.getElementById("learned-rules-modal");
+      if (modal) modal.classList.remove("active");
+    }
+
+    function renderLearnedRulesModalContent(data, currentEik) {
+      const content = document.getElementById("learned-rules-content");
+      if (!content) return;
+
+      if (data.profile && Object.keys(data.profile).length > 0) {
+        const p = data.profile;
+        const series = p.invoice_number_series || {};
+        const priors = p.spatial_priors || {};
+        const ocr = p.ocr || {};
+        const homos = ocr.homoglyphs || {};
+
+        let html = `
+          <div class="rule-box">
+            <h4>🏢 Доставчик: ${escapeHtml(p.name || 'Неизвестен')}</h4>
+            <p><strong>ЕИК:</strong> ${escapeHtml(p.eik || currentEik)} | <strong>ДДС:</strong> ${escapeHtml(p.vat || 'Не')} | <strong>Профил ID:</strong> <code>${escapeHtml(p.id || '')}</code></p>
+          </div>
+
+          <div class="rule-box">
+            <h4>🔢 Шаблон за номер на фактура (RLHF Series Pattern)</h4>
+            ${series.prefix || series.length ? `
+              <p>Префикс: <span class="rule-badge">${escapeHtml(series.prefix || 'няма')}</span> Дължина: <span class="rule-badge">${series.length || 10} цифри</span></p>
+              ${series.regex ? `<p>Regex валидация: <code>${escapeHtml(series.regex)}</code></p>` : ''}
+              ${series.sample ? `<p>Примерен обучителен номер: <strong>${escapeHtml(series.sample)}</strong></p>` : ''}
+            ` : `<p style="color:var(--text-muted);">Все още няма обучен шаблон за серия. Коригирайте номера на фактура с 1-клик, за да се обучи автоматично.</p>`}
+          </div>
+
+          <div class="rule-box">
+            <h4>📍 Пространствени координати (Spatial Priors)</h4>
+            ${Object.keys(priors).length > 0 ? Object.entries(priors).map(([f, info]) => `
+              <p>Поле: <strong>${escapeHtml(f)}</strong> &rarr; <span class="rule-badge">bbox: [${((info && info.bbox) || info || []).map(n => Number(n).toFixed(3)).join(', ')}]</span></p>
+            `).join('') : `<p style="color:var(--text-muted);">Няма записани пространствени координати. Кликнете поле директно от фактурата за да обучите позицията му.</p>`}
+          </div>
+
+          <div class="rule-box">
+            <h4>🔤 Матричен шрифт и OCR Хомоглифи (Dot-Matrix Mappings)</h4>
+            <p>Матричен печат: <strong>${p.dot_matrix ? 'Да (9/24-pin Dot Matrix)' : 'Не / Стандартен'}</strong></p>
+            ${Object.keys(homos).length > 0 ? `
+              <p>Научени транслации: ${Object.entries(homos).map(([k, v]) => `<span class="rule-badge">${escapeHtml(k)} &rarr; ${escapeHtml(v)}</span>`).join(' ')}</p>
+            ` : ''}
+          </div>
+        `;
+
+        if (data.recent_exemplars && data.recent_exemplars.length > 0) {
+          html += `
+            <div class="rule-box">
+              <h4>📜 Последни обучителни корекции от оператори (${data.recent_exemplars.length})</h4>
+              <ul style="padding-left:1.2rem; margin-top:0.3rem;">
+                ${data.recent_exemplars.slice(0, 5).map(ex => `
+                  <li><strong>${escapeHtml(ex.field_name)}</strong>: "${escapeHtml(ex.original_value || '')}" &rarr; "${escapeHtml(ex.corrected_value || '')}" <span style="color:var(--text-muted); font-size:0.7rem;">(${escapeHtml(ex.actor || 'accountant')})</span></li>
+                `).join('')}
+              </ul>
+            </div>
+          `;
+        }
+
+        html += `
+          <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1rem;">
+            <button class="btn btn-secondary btn-sm" onclick="closeLearnedRulesModal()">Затвори</button>
+          </div>
+        `;
+        content.innerHTML = html;
+      } else {
+        content.innerHTML = `
+          <div class="rule-box">
+            <h4>📊 Обща статистика за RLHF самообучението на модела</h4>
+            <p>Общо обработени човешки корекции: <strong>${data.total_corrections_learned || 0}</strong></p>
+            <p>Уникални доставчици с подобрени правила: <strong>${data.distinct_vendors_refined || 0}</strong></p>
+            <p>Активни обучени профили: <strong>${(data.active_learned_vendor_profiles || []).length}</strong></p>
+          </div>
+          <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1rem;">
+            <button class="btn btn-secondary btn-sm" onclick="closeLearnedRulesModal()">Затвори</button>
+          </div>
+        `;
+      }
     }
 
     function openBoxPopover(x, y, token) {
@@ -1589,7 +1938,7 @@
       if (!selectedTokenForPopover) return;
       const input = document.getElementById(targetId);
       if (input) {
-        applyValueToInput(input, selectedTokenForPopover.text);
+        applyValueToInput(input, selectedTokenForPopover.text, selectedTokenForPopover);
       }
       closeBoxPopover();
     }
@@ -1845,5 +2194,18 @@
       }
     }
   </script>
+
+  <!-- Learned Rules Modal (RLHF Inspector) -->
+  <div class="modal-overlay" id="learned-rules-modal" onclick="if(event.target===this) closeLearnedRulesModal()">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>🧠 Научени правила за доставчика (RLHF)</h3>
+        <button class="modal-close-btn" onclick="closeLearnedRulesModal()">✕</button>
+      </div>
+      <div id="learned-rules-content">
+        <!-- Dynamically rendered -->
+      </div>
+    </div>
+  </div>
 </body>
 </html>
