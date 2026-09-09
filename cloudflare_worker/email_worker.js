@@ -17,9 +17,14 @@ export default {
     const date = message.headers?.get("date") || new Date().toISOString();
     const messageId = message.headers?.get("message-id") || "";
 
-    // Default target webhook and secret token
-    const targetUrl = (env && env.OCR_WEBHOOK_URL) || "https://ocr.openbalancer.com/api/v1/ingest/email?token=dev_webhook_secret";
-    const webhookSecret = (env && env.OCR_WEBHOOK_SECRET) || "dev_webhook_secret";
+    // Support intelligent recipient-based routing between invoice and docs endpoints
+    const isDocsRecipient = recipient.toLowerCase().includes("docs@");
+    const defaultUrl = isDocsRecipient
+      ? "https://ocr.openbalancer.com/api/v1/ingest/docs-email"
+      : "https://ocr.openbalancer.com/api/v1/ingest/email";
+
+    const targetUrl = (env && (isDocsRecipient ? (env.DOCS_WEBHOOK_URL || env.OCR_WEBHOOK_URL) : env.OCR_WEBHOOK_URL)) || defaultUrl;
+    const webhookSecret = (env && (env.OCR_WEBHOOK_SECRET || env.DOCS_WEBHOOK_SECRET)) || "dev_webhook_secret";
 
     try {
       // Read the full raw email stream (RFC 822 MIME) into memory

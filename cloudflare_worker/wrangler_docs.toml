@@ -1,0 +1,7 @@
+name = "docs-email-classification-worker"
+main = "docs_worker.js"
+compatibility_date = "2026-09-08"
+
+[vars]
+DOCS_WEBHOOK_URL = "https://ocr.openbalancer.com/api/v1/ingest/docs-email"
+DOCS_WEBHOOK_SECRET = "dev_webhook_secret"

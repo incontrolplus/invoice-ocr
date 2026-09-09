@@ -661,6 +661,122 @@ def save_document_to_db(
     return record
 
 
+def save_classified_document_to_db(
+    db: Session,
+    doc_id: str,
+    file_name: str,
+    category: str,
+    confidence: float,
+    source_path: Optional[Path] = None,
+    matched_keywords: Optional[list[str]] = None,
+    text_content: Optional[str] = None,
+    extra_metadata: Optional[dict[str, Any]] = None,
+    processing_time: float = 0.0,
+    source_channel: str = "MANUAL_UPLOAD",
+    source_sender: Optional[str] = None,
+) -> DocumentRecord:
+    """Persist classified non-invoice document into database with audit entry and Supabase sync."""
+    file_path_str = None
+    file_hash = None
+    file_size = 0
+
+    if source_path and source_path.exists():
+        stored_path, file_hash, file_size = storage_manager.save_file(doc_id, file_name, source_path)
+        file_path_str = str(stored_path)
+
+    existing = db.query(DocumentRecord).filter(DocumentRecord.id == doc_id).first()
+
+    ocr_payload = {
+        "doc_id": doc_id,
+        "file_name": file_name,
+        "category": category,
+        "confidence": round(confidence, 4),
+        "matched_keywords": matched_keywords or [],
+        "text_preview": (text_content or "")[:5000],
+        "source_channel": source_channel,
+        "source_sender": source_sender,
+        "extra_metadata": extra_metadata or {},
+    }
+
+    status_str = "classified"
+
+    record = DocumentRecord(
+        id=doc_id,
+        file_name=file_name,
+        file_path=file_path_str,
+        file_hash=file_hash,
+        file_size_bytes=file_size,
+        processing_time_sec=round(processing_time, 3),
+        status=status_str,
+        is_valid=True,
+        error_count=0,
+        warning_count=0,
+        ocr_result_json=json.dumps(ocr_payload, ensure_ascii=False),
+        webhook_status="none",
+    )
+
+    if existing:
+        existing.file_name = file_name
+        existing.file_path = file_path_str
+        existing.file_hash = file_hash
+        existing.file_size_bytes = file_size
+        existing.processing_time_sec = round(processing_time, 3)
+        existing.status = status_str
+        existing.ocr_result_json = json.dumps(ocr_payload, ensure_ascii=False)
+        existing.updated_at = datetime.now(timezone.utc)
+        db.add(existing)
+        record = existing
+    else:
+        db.add(record)
+
+    audit = AuditTrailRecord(
+        document_id=doc_id,
+        actor="system:document_classifier",
+        action="classified",
+        details_json=json.dumps({
+            "file_name": file_name,
+            "category": category,
+            "confidence": round(confidence, 4),
+            "matched_keywords": matched_keywords or [],
+            "source_channel": source_channel,
+        }, ensure_ascii=False),
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(record)
+
+    # Background Supabase sync
+    try:
+        from supabase_sync import is_supabase_configured, sync_classified_document_to_supabase
+        if is_supabase_configured():
+            import asyncio
+            import threading
+
+            def _run_sync_thread():
+                try:
+                    asyncio.run(sync_classified_document_to_supabase(
+                        doc_id=doc_id,
+                        file_name=file_name,
+                        category=category,
+                        confidence=confidence,
+                        text_content=text_content or "",
+                        matched_keywords=matched_keywords or [],
+                        file_hash=file_hash or "",
+                        file_size_bytes=file_size,
+                        source_channel=source_channel,
+                        source_sender=source_sender,
+                        extra_metadata=extra_metadata,
+                    ))
+                except Exception as t_err:
+                    logger.warning("Background Supabase classified doc sync error: %s", t_err)
+
+            threading.Thread(target=_run_sync_thread, daemon=True, name=f"supa-class-{doc_id[:8]}").start()
+    except Exception as supa_init_err:
+        logger.warning("Supabase sync initialization error: %s", supa_init_err)
+
+    return record
+
+
 def add_audit_entry(
     db: Session,
     document_id: str,

@@ -423,3 +423,90 @@ async def sync_invoice_to_supabase(
         except Exception as exc:
             logger.error("Exception during Supabase sync for %s: %s", doc_id, exc, exc_info=True)
             return {"status": "error", "error": str(exc)}
+
+
+async def sync_classified_document_to_supabase(
+    doc_id: str,
+    file_name: str,
+    category: str,
+    confidence: float,
+    matched_keywords: list[str],
+    text_content: str = "",
+    file_hash: str = "",
+    file_size_bytes: int = 0,
+    source_channel: str = "docs_email",
+    source_sender: Optional[str] = None,
+    extra_metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Sync a non-invoice classified document into Supabase public.documents and notify n8n."""
+    if not is_supabase_configured():
+        logger.debug("Supabase sync skipped: credentials not configured")
+        return {"status": "skipped", "reason": "not_configured"}
+
+    doc_uuid = _to_uuid(doc_id)
+    payload = {
+        "id": doc_uuid,
+        "title": f"{category}: {file_name}",
+        "category": category,
+        "content": (text_content or "")[:50000],
+        "tags": [category, "document_classifier", source_channel],
+        "source": source_sender or source_channel,
+        "metadata": {
+            "doc_id": doc_id,
+            "file_name": file_name,
+            "category": category,
+            "confidence": round(confidence, 4),
+            "matched_keywords": matched_keywords or [],
+            "file_hash_sha256": file_hash,
+            "file_size_bytes": file_size_bytes,
+            "source_channel": source_channel,
+            "source_sender": source_sender,
+            **(extra_metadata or {}),
+        },
+    }
+
+    base_rest = f"{SUPABASE_URL}/rest/v1"
+    headers = _get_headers()
+
+    try:
+        async with httpx.AsyncClient(timeout=DEFAULT_HTTP_TIMEOUT) as client:
+            resp = await client.post(
+                f"{base_rest}/documents",
+                json=payload,
+                headers=headers,
+            )
+            if resp.status_code not in (200, 201):
+                logger.warning(
+                    "Supabase sync warning for classified document %s: HTTP %d - %s",
+                    doc_id, resp.status_code, resp.text,
+                )
+                return {"status": "error", "code": resp.status_code, "detail": resp.text}
+
+            logger.info("Successfully synced classified document %s (%s) to Supabase", doc_id, category)
+
+            # Notify n8n
+            if N8N_WEBHOOK_URL:
+                try:
+                    await client.post(
+                        N8N_WEBHOOK_URL,
+                        json={
+                            "event": "document_classified",
+                            "doc_id": doc_id,
+                            "doc_uuid": doc_uuid,
+                            "file_name": file_name,
+                            "category": category,
+                            "confidence": round(confidence, 4),
+                            "source_channel": source_channel,
+                            "source_sender": source_sender,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                        timeout=5.0,
+                    )
+                except Exception as n8n_err:
+                    logger.warning("n8n notification failed for classified document: %s", n8n_err)
+
+            return {"status": "success", "doc_uuid": doc_uuid, "category": category}
+
+    except Exception as exc:
+        logger.error("Exception syncing classified document %s: %s", doc_id, exc, exc_info=True)
+        return {"status": "error", "error": str(exc)}

@@ -64,6 +64,7 @@ from database import (
     get_db,
     get_db_session,
     init_db,
+    save_classified_document_to_db,
     save_document_to_db,
     storage_manager,
     update_document_corrections,
@@ -128,6 +129,12 @@ from invoice_core.watcher import (
 from invoice_core.imap_poller import (
     ImapPoller,
     ImapPollerConfig,
+)
+from invoice_core.document_classifier import (
+    ClassificationResult,
+    DocumentCategory,
+    SubdocumentInfo,
+    get_document_classifier,
 )
 
 logger = logging.getLogger("invoice_ocr_api")
@@ -1278,6 +1285,444 @@ async def ingest_email_webhook(
         "total_attachments": len(parsed_email.all_attachments),
         "filtered_attachments": [a.to_dict() for a in parsed_email.filtered_attachments],
         "invoices_processed": len(results),
+        "results": results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Document Classification & Docs-Email Ingestion Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/api/v1/classify/document",
+    summary="Statutory Document Classification & Multi-Doc Splitter",
+    tags=["Document Classification"],
+)
+async def classify_document_endpoint(
+    file: UploadFile = File(..., description="Document file to classify (PDF, JPEG, PNG, TIFF)"),
+    lang: str = Query(default=DEFAULT_OCR_LANG, description="OCR languages (e.g. bul+eng)"),
+    sync_supabase: bool = Query(default=True, description="Automatically persist and sync result to Supabase"),
+    auto_process_invoice: bool = Query(default=True, description="If classified as Fakturi, run full invoice extraction engine"),
+    webhook_url: Optional[str] = Query(default=None, description="Optional webhook URL to receive classified document"),
+):
+    """Classify an uploaded document into statutory categories:
+    - Фактури (INVOICE)
+    - Кредитни известия (CREDIT_NOTE)
+    - Стокови разписки (STOCK_RECEIPT)
+    - Фискални бонове (FISCAL_RECEIPT)
+    - Пощенски парични преводи (POSTAL_MONEY_TRANSFER)
+    - Платежни документи (PAYMENT_DOCUMENT)
+    - Некласифицирани (UNCLASSIFIED)
+
+    Performs multi-page boundary analysis, physical obscuration detection (e.g. receipt covering invoice header),
+    and dispatches to Supabase PostgreSQL & n8n workflow automation.
+    """
+    file_name = file.filename or "uploaded_document"
+    ext = Path(file_name).suffix.lower() or ".pdf"
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file format '{ext}'. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+        )
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is empty",
+        )
+
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp_file:
+        tmp_file.write(content)
+        tmp_path = Path(tmp_file.name)
+
+    t0 = time.perf_counter()
+    doc_id = uuid.uuid4().hex
+
+    try:
+        classifier = get_document_classifier()
+        classification: ClassificationResult = await run_in_threadpool(
+            classifier.classify_file,
+            tmp_path,
+            file_name,
+        )
+        proc_time = time.perf_counter() - t0
+
+        # Check if classified as Invoice and requested to auto-process
+        if classification.category == DocumentCategory.FAKTURI and auto_process_invoice and not classification.is_obscured:
+            pool = get_ocr_pool()
+            ocr_res = await pool.submit_ocr_async(
+                file_path=tmp_path,
+                lang=lang,
+                use_cache=True,
+                return_invoice_object=True,
+            )
+            if ocr_res.get("status") == "success" and ocr_res.get("invoice") is not None:
+                inv = ocr_res["invoice"]
+                full_res = _invoice_to_dict(inv, include_raw_evidence=True)
+                full_res["file_name"] = file_name
+                full_res["source_channel"] = "MANUAL_UPLOAD"
+                full_res["classification"] = classification.to_dict()
+
+                with get_db_session() as db:
+                    doc_rec = save_document_to_db(
+                        db=db,
+                        doc_id=doc_id,
+                        file_name=file_name,
+                        source_path=tmp_path,
+                        ocr_result=full_res,
+                        processing_time=proc_time,
+                        webhook_url=webhook_url,
+                    )
+                    saved_dict = doc_rec.to_dict()
+
+                return {
+                    "status": "success",
+                    "document_id": doc_id,
+                    "file_name": file_name,
+                    "category": classification.category.value,
+                    "category_code": classification.category.name,
+                    "confidence": round(classification.confidence, 4),
+                    "matched_keywords": classification.matched_keywords,
+                    "is_obscured": classification.is_obscured,
+                    "obscuration_reason": classification.obscuration_reason,
+                    "subdocuments": [s.to_dict() for s in classification.subdocuments],
+                    "routing_action": "routed_to_invoices",
+                    "processing_time_sec": round(proc_time, 3),
+                    "invoice_data": saved_dict,
+                }
+
+        # For non-invoice categories (or when auto_process_invoice is False or document is obscured)
+        saved_dict = None
+        if sync_supabase:
+            with get_db_session() as db:
+                doc_rec = save_classified_document_to_db(
+                    db=db,
+                    doc_id=doc_id,
+                    file_name=file_name,
+                    category=classification.category.value,
+                    confidence=classification.confidence,
+                    source_path=tmp_path,
+                    matched_keywords=classification.matched_keywords,
+                    text_content=classification.extracted_text,
+                    extra_metadata={
+                        "is_obscured": classification.is_obscured,
+                        "obscuration_reason": classification.obscuration_reason,
+                        "subdocuments": [s.to_dict() for s in classification.subdocuments],
+                    },
+                    processing_time=proc_time,
+                    source_channel="MANUAL_UPLOAD",
+                )
+                saved_dict = doc_rec.to_dict() if hasattr(doc_rec, "to_dict") else {"id": doc_id}
+
+        routing_action = "flag_for_rescan" if classification.is_obscured else "archived_as_classified"
+
+        return {
+            "status": "success",
+            "document_id": doc_id,
+            "file_name": file_name,
+            "category": classification.category.value,
+            "category_code": classification.category.name,
+            "confidence": round(classification.confidence, 4),
+            "matched_keywords": classification.matched_keywords,
+            "is_obscured": classification.is_obscured,
+            "obscuration_reason": classification.obscuration_reason,
+            "subdocuments": [s.to_dict() for s in classification.subdocuments],
+            "routing_action": routing_action,
+            "processing_time_sec": round(proc_time, 3),
+            "saved_record": saved_dict,
+        }
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/api/v1/ingest/docs-email",
+    summary="Zero-Touch Document Classification Email Webhook (docs@incontrolplus.com)",
+    tags=["Ingestion"],
+)
+async def ingest_docs_email_webhook(
+    request: Request,
+    token: Optional[str] = Query(default=None, description="Optional webhook authorization secret token"),
+    webhook_url: Optional[str] = Query(default=None, description="Optional ERP webhook URL to forward processed data"),
+    require_spf: bool = Query(default=False, description="Require valid SPF pass"),
+    require_dkim: bool = Query(default=False, description="Require valid DKIM pass"),
+    block_spf_fail: bool = Query(default=True, description="Reject incoming emails if SPF explicitly fails"),
+    min_size_bytes: int = Query(default=DEFAULT_MIN_ATTACHMENT_SIZE_BYTES, description="Minimum attachment size in bytes (<10KB filtered out)"),
+    hitl_base_url: Optional[str] = Query(default=None, description="Base URL for HITL dashboard links"),
+    lang: str = Query(default=DEFAULT_OCR_LANG, description="OCR languages"),
+):
+    """Zero-touch document classifier webhook receiver for docs@incontrolplus.com.
+
+    - Authenticates webhook call
+    - Verifies SPF/DKIM integrity
+    - Extracts candidate attachments (> 10KB threshold)
+    - Automatically classifies every document across statutory categories:
+      Фактури, Кредитни известия, Стокови разписки, Фискални бонове,
+      Пощенски парични преводи, Платежни документи, Некласифицирани
+    - If classified as 'Фактури':
+      Dispatches to full invoice extraction pipeline, persists to DB, syncs to Supabase 'invoices',
+      and delivers reverse confirmation notifications.
+    - If other category:
+      Persists to DB, stores in Supabase 'documents' table with category tags,
+      and emits n8n classified event for workflow routing.
+    """
+    # 1. Authorization check
+    auth_header = request.headers.get("X-Ingest-Token") or request.headers.get("X-Webhook-Secret")
+    if not auth_header and "authorization" in request.headers:
+        bearer = request.headers["authorization"].split()
+        if len(bearer) == 2 and bearer[0].lower() == "bearer":
+            auth_header = bearer[1]
+    provided_token = token or auth_header
+
+    configured_secret = os.environ.get("EMAIL_INGEST_SECRET") or os.environ.get("WEBHOOK_SECRET")
+    if configured_secret:
+        if not provided_token or not verify_webhook_token(provided_token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: invalid or missing ingest webhook token",
+            )
+
+    # 2. Parse incoming payload
+    content_type = request.headers.get("content-type", "").lower()
+    parsed_email: Optional[ParsedEmail] = None
+
+    try:
+        if "application/json" in content_type:
+            json_body = await request.json()
+            parsed_email = parse_cloudflare_worker_json(
+                json_body,
+                require_spf=require_spf,
+                require_dkim=require_dkim,
+                block_spf_fail=block_spf_fail,
+                min_size_bytes=min_size_bytes,
+            )
+        elif "multipart/form-data" in content_type:
+            form = await request.form()
+            form_fields: dict[str, Any] = {}
+            form_files: list[tuple[str, str, bytes, str]] = []
+            for k, v in form.multi_items():
+                if hasattr(v, "read") and hasattr(v, "filename"):
+                    data = await v.read()
+                    form_files.append((k, v.filename or k, data, getattr(v, "content_type", None) or "application/octet-stream"))
+                else:
+                    form_fields[k] = v
+            parsed_email = parse_multipart_form_data(
+                form_fields=form_fields,
+                form_files=form_files,
+                require_spf=require_spf,
+                require_dkim=require_dkim,
+                block_spf_fail=block_spf_fail,
+                min_size_bytes=min_size_bytes,
+            )
+        else:
+            raw_body = await request.body()
+            parsed_email = parse_mime_email(
+                raw_body,
+                require_spf=require_spf,
+                require_dkim=require_dkim,
+                block_spf_fail=block_spf_fail,
+                min_size_bytes=min_size_bytes,
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed parsing docs-email payload: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Malformed email payload: {exc}",
+        )
+
+    # 3. Security evaluation
+    if not parsed_email.security.is_authorized:
+        logger.warning(
+            "Rejected docs email from '%s': %s (verdict: %s)",
+            parsed_email.sender, parsed_email.security.details, parsed_email.security.security_verdict,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "Email security verification failed",
+                "security": parsed_email.security.to_dict(),
+                "verdict": parsed_email.security.security_verdict,
+                "message": parsed_email.security.details,
+            },
+        )
+
+    # 4. Candidate attachments check
+    if len(parsed_email.valid_attachments) == 0:
+        logger.info(
+            "Docs email from '%s' had no valid attachments (%d filtered)",
+            parsed_email.sender, len(parsed_email.filtered_attachments),
+        )
+        return {
+            "status": "no_documents_found",
+            "message": "No valid document attachments found in email. Filtered out spam/logos/signatures (< 10KB) or non-document files.",
+            "email_metadata": {
+                "sender": parsed_email.sender,
+                "recipient": parsed_email.recipient,
+                "subject": parsed_email.subject,
+                "date": parsed_email.date,
+                "message_id": parsed_email.message_id,
+                "spf": parsed_email.security.spf_status,
+                "dkim": parsed_email.security.dkim_status,
+            },
+            "security": parsed_email.security.to_dict(),
+            "total_attachments": len(parsed_email.all_attachments),
+            "filtered_attachments": [a.to_dict() for a in parsed_email.filtered_attachments],
+            "documents_processed": 0,
+            "results": [],
+        }
+
+    # 5. Process candidate attachments
+    results = []
+    pool = get_ocr_pool()
+    classifier = get_document_classifier()
+
+    for att in parsed_email.valid_attachments:
+        suffix = Path(att.filename).suffix.lower() or ".pdf"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_file:
+            tmp_file.write(att.data)
+            tmp_path = Path(tmp_file.name)
+
+        doc_id = uuid.uuid4().hex
+        try:
+            t0 = time.perf_counter()
+            classification = await run_in_threadpool(
+                classifier.classify_file,
+                tmp_path,
+                att.filename,
+            )
+            proc_time = time.perf_counter() - t0
+
+            if classification.category == DocumentCategory.FAKTURI and not classification.is_obscured:
+                # Invoice Pipeline
+                res = await pool.submit_ocr_async(
+                    file_path=tmp_path,
+                    lang=lang,
+                    use_cache=True,
+                    return_invoice_object=True,
+                )
+                if res.get("status") == "success" and res.get("invoice") is not None:
+                    inv = res["invoice"]
+                    full_res = _invoice_to_dict(inv, include_raw_evidence=True)
+                    full_res["file_name"] = att.filename
+                    full_res["source_channel"] = "email_docs"
+                    full_res["email_metadata"] = {
+                        "sender": parsed_email.sender,
+                        "recipient": parsed_email.recipient,
+                        "subject": parsed_email.subject,
+                        "date": parsed_email.date,
+                        "message_id": parsed_email.message_id,
+                    }
+                    full_res["classification"] = classification.to_dict()
+
+                    with get_db_session() as db:
+                        doc_rec = save_document_to_db(
+                            db=db,
+                            doc_id=doc_id,
+                            file_name=att.filename,
+                            source_path=tmp_path,
+                            ocr_result=full_res,
+                            processing_time=proc_time,
+                            webhook_url=webhook_url,
+                        )
+                        saved_dict = doc_rec.to_dict()
+
+                    notif_res = await dispatch_reverse_notifications_bundle(
+                        doc_dict=saved_dict,
+                        sender_email=parsed_email.sender,
+                        erp_webhook_url=webhook_url,
+                        hitl_base_url=hitl_base_url,
+                    )
+
+                    results.append({
+                        "document_id": doc_id,
+                        "file_name": att.filename,
+                        "category": classification.category.value,
+                        "category_code": classification.category.name,
+                        "confidence": round(classification.confidence, 4),
+                        "routing_action": "routed_to_invoices",
+                        "invoice_number": saved_dict.get("invoice_number"),
+                        "supplier_name": saved_dict.get("supplier_name"),
+                        "total_amount": saved_dict.get("total_amount"),
+                        "status": saved_dict.get("status"),
+                        "processing_time_sec": round(proc_time, 2),
+                        "hitl_url": notif_res.get("summary", {}).get("hitl_url", f"http://localhost:8000/dashboard?doc_id={doc_id}"),
+                        "notifications": notif_res,
+                    })
+                    continue
+
+            # Non-invoice categories or obscured documents
+            routing_action = "flag_for_rescan" if classification.is_obscured else "archived_as_classified"
+            with get_db_session() as db:
+                save_classified_document_to_db(
+                    db=db,
+                    doc_id=doc_id,
+                    file_name=att.filename,
+                    category=classification.category.value,
+                    confidence=classification.confidence,
+                    source_path=tmp_path,
+                    matched_keywords=classification.matched_keywords,
+                    text_content=classification.extracted_text,
+                    extra_metadata={
+                        "is_obscured": classification.is_obscured,
+                        "obscuration_reason": classification.obscuration_reason,
+                        "subdocuments": [s.to_dict() for s in classification.subdocuments],
+                        "email_metadata": {
+                            "sender": parsed_email.sender,
+                            "recipient": parsed_email.recipient,
+                            "subject": parsed_email.subject,
+                            "date": parsed_email.date,
+                            "message_id": parsed_email.message_id,
+                        },
+                    },
+                    processing_time=proc_time,
+                    source_channel="email_docs",
+                    source_sender=parsed_email.sender,
+                )
+
+            results.append({
+                "document_id": doc_id,
+                "file_name": att.filename,
+                "category": classification.category.value,
+                "category_code": classification.category.name,
+                "confidence": round(classification.confidence, 4),
+                "matched_keywords": classification.matched_keywords,
+                "is_obscured": classification.is_obscured,
+                "obscuration_reason": classification.obscuration_reason,
+                "subdocuments": [s.to_dict() for s in classification.subdocuments],
+                "routing_action": routing_action,
+                "processing_time_sec": round(proc_time, 2),
+            })
+        except Exception as proc_err:
+            logger.error("Failed processing attachment %s: %s", att.filename, proc_err, exc_info=True)
+            results.append({
+                "document_id": doc_id,
+                "file_name": att.filename,
+                "category": DocumentCategory.NEKLASIFITSIRANI.value,
+                "category_code": DocumentCategory.NEKLASIFITSIRANI.name,
+                "error": str(proc_err),
+                "routing_action": "error",
+            })
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    return {
+        "status": "success",
+        "email_metadata": {
+            "sender": parsed_email.sender,
+            "recipient": parsed_email.recipient,
+            "subject": parsed_email.subject,
+            "date": parsed_email.date,
+            "message_id": parsed_email.message_id,
+            "spf": parsed_email.security.spf_status,
+            "dkim": parsed_email.security.dkim_status,
+        },
+        "security": parsed_email.security.to_dict(),
+        "total_attachments": len(parsed_email.all_attachments),
+        "filtered_attachments": [a.to_dict() for a in parsed_email.filtered_attachments],
+        "documents_processed": len(results),
         "results": results,
     }
 

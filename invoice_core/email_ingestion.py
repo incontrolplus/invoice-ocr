@@ -571,7 +571,7 @@ def parse_cloudflare_worker_json(
             continue
         fn = item.get("filename") or item.get("name") or "attachment"
         ctype = item.get("content_type") or item.get("type") or "application/octet-stream"
-        content_b64 = item.get("content") or item.get("data") or ""
+        content_b64 = item.get("content") or item.get("data") or item.get("content_base64") or ""
         is_inline = bool(item.get("is_inline") or item.get("inline"))
         cid = item.get("content_id") or item.get("cid")
 
