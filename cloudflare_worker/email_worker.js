@@ -19,11 +19,9 @@ export default {
 
     // Support intelligent recipient-based routing between invoice and docs endpoints
     const isDocsRecipient = recipient.toLowerCase().includes("docs@");
-    const defaultUrl = isDocsRecipient
-      ? "https://ocr.openbalancer.com/api/v1/ingest/docs-email"
-      : "https://ocr.openbalancer.com/api/v1/ingest/email";
-
-    const targetUrl = (env && (isDocsRecipient ? (env.DOCS_WEBHOOK_URL || env.OCR_WEBHOOK_URL) : env.OCR_WEBHOOK_URL)) || defaultUrl;
+    const targetUrl = isDocsRecipient
+      ? ((env && env.DOCS_WEBHOOK_URL) || "https://ocr.openbalancer.com/api/v1/ingest/docs-email")
+      : ((env && env.OCR_WEBHOOK_URL) || "https://ocr.openbalancer.com/api/v1/ingest/email");
     const webhookSecret = (env && (env.OCR_WEBHOOK_SECRET || env.DOCS_WEBHOOK_SECRET)) || "dev_webhook_secret";
 
     try {
