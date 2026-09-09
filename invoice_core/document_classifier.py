@@ -152,17 +152,21 @@ PATTERNS = {
             r"\bdebit\s+note\b",
             r"\bсториращ\s+документ\b",
             r"\bсторниране\b",
-            r"\bсторно\b",
+            r"\b(?:сторно|ctopho|ctorno|storno)\b",
             r"\bизвестие\s+към\s+фактура\b",
             r"\bкорекция\s+към\s+фактура\b",
             r"\bнамаление\s+(?:на\s+)?данъчна(?:та)?\s+основа\b",
             r"\bданъчно\s+известие\b",
+            r"\b(?:по\s+)?ки\s*[:\s#№@]*\d{6,10}\b",
+            r"\bки\s+към\s+ф[-–.]?р[ае]\b",
         ],
         "supporting": [
             r"\bкъм\s+фактура\s*№?\s*\d+\b",
             r"\bпричина\s+за\s+корекция\b",
             r"\bвръщане\s+на\s+стока\b",
+            r"\bвръщане\s*[/и\s]*рек[лд]амация\b",
             r"\bрекламация\b",
+            r"\bминус\s+[а-яa-z\s]+(?:eur|bgn|лв|лева|цента)\b",
             r"\b-\s*\d+[.,]\d{2}\s*(?:eur|bgn|лв|евро)\b",
         ],
     },
@@ -386,20 +390,28 @@ class DocumentClassifier:
         # Disambiguation & Context Boosts
         # -------------------------------------------------------------------
 
-        # 1. Credit Notes rule over Invoices
-        if scores[DocumentCategory.KREDITNI_IZVESTIYA] >= 5.0:
-            scores[DocumentCategory.KREDITNI_IZVESTIYA] += scores[DocumentCategory.FAKTURI] * 0.4
+        # 1. Credit Notes rule over Invoices and subordinate Storno Fiscal Slips
+        has_credit_or_storno = bool(re.search(
+            r"\b(?:кредитно\s+известие|кред\.?\s*известие|дебитно\s+известие|сторно|ctopho|ctorno|storno|по\s+ки\b|ки\s*[:\s#№@]*\d+)\b",
+            cleaned_text,
+        ))
+        if has_credit_or_storno and scores[DocumentCategory.KREDITNI_IZVESTIYA] >= 4.0:
+            scores[DocumentCategory.KREDITNI_IZVESTIYA] += scores[DocumentCategory.FAKTURI] * 0.5
             scores[DocumentCategory.FAKTURI] *= 0.1
+            # If an attached storno fiscal slip is present, the Credit Note is the primary statutory document
+            if scores[DocumentCategory.FISKALNI_BONEVE] > 0:
+                scores[DocumentCategory.KREDITNI_IZVESTIYA] += scores[DocumentCategory.FISKALNI_BONEVE] * 0.8
+                scores[DocumentCategory.FISKALNI_BONEVE] *= 0.1
 
         # 2. Fiscal Receipt vs Invoice
         has_invoice_title = bool(re.search(r"\bфактура\b", cleaned_text))
         has_fiscal_title = bool(re.search(r"\bфискал[еа]н\s+бон\b|\bсист[еа]м[еа]н\s+бон\b|\bсист[еа]рнен\s+бон\b", cleaned_text))
         has_vat_tax_base = bool(re.search(r"\bданъчна\s+основа\b|\bначислен\s+ддс\b", cleaned_text))
 
-        if has_fiscal_title and not has_vat_tax_base and not (has_invoice_title and scores[DocumentCategory.FAKTURI] > 10):
+        if has_fiscal_title and not has_credit_or_storno and not has_vat_tax_base and not (has_invoice_title and scores[DocumentCategory.FAKTURI] > 10):
             scores[DocumentCategory.FISKALNI_BONEVE] += 8.0
             scores[DocumentCategory.FAKTURI] *= 0.2
-        elif has_invoice_title and has_vat_tax_base:
+        elif has_invoice_title and has_vat_tax_base and not has_credit_or_storno:
             scores[DocumentCategory.FAKTURI] += 6.0
             scores[DocumentCategory.FISKALNI_BONEVE] *= 0.3
 
@@ -654,6 +666,15 @@ class DocumentClassifier:
 
         if not pages_text:
             pages_text = [""]
+
+        # Filename clues boost for OCR disambiguation
+        effective_name = (file_name or path.name).lower()
+        if re.search(r"[\(_\s-]ки[\)_\s.\d-]|кредитн|сторно|credit", effective_name):
+            pages_text = [p + "\nкредитно известие сторно" for p in pages_text]
+        elif re.search(r"[\(_\s-]фактур|invoice", effective_name):
+            pages_text = [p + "\nфактура" for p in pages_text]
+        elif re.search(r"[\(_\s-]сток|разписк", effective_name):
+            pages_text = [p + "\nстокова разписка" for p in pages_text]
 
         return self.classify_document(pages_text=pages_text, file_path=path)
 
