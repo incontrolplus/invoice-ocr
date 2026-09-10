@@ -489,10 +489,10 @@ KNOWN_CONTRACTORS_MOCK_REGISTRY: dict[str, dict[str, Any]] = {
         "company_name": "ДЖЕНТЪЛМЕН ГРУП ЕООД",
         "legal_status": CompanyStatus.ACTIVE,
         "vat_status": VatRegistrationStatus.REGISTERED,
-        "vat_registration_date": "2015-12-03",
+        "vat_registration_date": "2016-12-08",
         "vat_deregistration_date": None,
-        "vat_legal_basis": "чл. 96 ЗДДС",
-        "address": "гр. София, бул. Патриарх Евтимий 77",
+        "vat_legal_basis": "чл. 100, ал. 1 ЗДДС",
+        "address": "гр. София 1373, р-н Красна поляна, ул. Суходолска 201",
     },
     "BG:131433901": {
         "company_name": "АБСОЛЮТ ПЛЮС ООД",
