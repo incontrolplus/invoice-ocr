@@ -1329,6 +1329,27 @@ class ContractorVerifier:
                                 break
                     except Exception:
                         continue
+                if not row and country == "BG" and not getattr(self, "offline_mode", False):
+                    if os.environ.get("DISABLE_N8N_PARTNER_SYNC", "").lower() not in ("true", "1", "yes"):
+                        n8n_urls = [
+                            os.environ.get("N8N_COMPANYBOOK_SYNC_URL", "https://n8n.openbalancer.com/webhook/companybook-sync-partner"),
+                            "http://100.83.83.8:5679/webhook/companybook-sync-partner",
+                        ]
+                        for n8n_url in n8n_urls:
+                            try:
+                                n8n_resp = await client.get(n8n_url, params={"eik": ident}, timeout=6.0)
+                                if n8n_resp.status_code == 200:
+                                    n8n_data = n8n_resp.json()
+                                    if n8n_data.get("success") and n8n_data.get("partner"):
+                                        row = n8n_data.get("partner")
+                                        matched_source = "ACCOUNTING_PARTNERS"
+                                        logger.info("Auto-synced EIK %s via n8n into accounting.partners", ident)
+                                        break
+                                elif n8n_resp.status_code == 404:
+                                    break
+                            except Exception as sync_err:
+                                logger.debug("n8n auto-sync failed for %s via %s: %s", ident, n8n_url, sync_err)
+                                continue
 
                 if row:
                         legal_st_val = (row.get("legal_status") or "ACTIVE").upper()

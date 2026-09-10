@@ -23,8 +23,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import difflib
 import logging
+import os
 import re
 from typing import Any, Optional
+
+import httpx
 
 from invoice_core.models import Party, ValidationIssue
 
@@ -287,6 +290,100 @@ class PartiesVerificationReport:
         }
 
 
+def sync_partner_via_n8n(eik: str, timeout: float = 6.0) -> Optional[dict]:
+    """Synchronously request the n8n CompanyBook partner sync workflow for a given EIK.
+
+    Calls the n8n webhook: https://n8n.openbalancer.com/webhook/companybook-sync-partner?eik={clean_eik}
+    This workflow queries CompanyBook API, validates the company, upserts into accounting.partners,
+    and returns {"success": true, "partner": {...}}.
+
+    Returns:
+        The synced partner dictionary, or None if failed / not found.
+    """
+    if os.environ.get("DISABLE_N8N_PARTNER_SYNC", "").lower() in ("true", "1", "yes"):
+        return None
+
+    clean = re.sub(r"[^0-9A-Za-z]", "", eik or "")
+    if clean.upper().startswith("BG"):
+        clean = clean[2:]
+    if not clean:
+        return None
+
+    n8n_urls = [
+        os.environ.get(
+            "N8N_COMPANYBOOK_SYNC_URL",
+            "https://n8n.openbalancer.com/webhook/companybook-sync-partner",
+        ),
+        "http://100.83.83.8:5679/webhook/companybook-sync-partner",
+    ]
+    for url in n8n_urls:
+        try:
+            resp = httpx.get(url, params={"eik": clean}, timeout=timeout)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("success") and data.get("partner"):
+                    logger.info("Successfully synced partner EIK %s via n8n workflow", clean)
+                    return data.get("partner")
+            elif resp.status_code == 404:
+                return None
+        except Exception as exc:
+            logger.debug("n8n sync request to %s failed: %s", url, exc)
+            continue
+    return None
+
+
+def build_contractor_result_from_partner_dict(row: dict, clean_eik: str) -> Any:
+    """Construct a ContractorVerificationResult from an accounting.partners dictionary row."""
+    from contractor_verification import (
+        CompanyStatus,
+        ContractorVerificationResult,
+        VatRegistrationStatus,
+    )
+
+    legal_st_val = (row.get("legal_status") or "ACTIVE").upper()
+    vat_st_val = (row.get("vat_status") or "REGISTERED").upper()
+    try:
+        legal_st = CompanyStatus(legal_st_val)
+    except ValueError:
+        legal_st = CompanyStatus.ACTIVE
+    try:
+        vat_st = VatRegistrationStatus(vat_st_val)
+    except ValueError:
+        vat_st = VatRegistrationStatus.REGISTERED
+
+    seat_addr = row.get("address")
+    if not seat_addr and row.get("seat_settlement") and row.get("seat_street"):
+        parts = [row.get("seat_settlement")]
+        if row.get("seat_area"):
+            parts.append(row.get("seat_area"))
+        street_part = row.get("seat_street")
+        if row.get("seat_street_number"):
+            street_part += f" {row.get('seat_street_number')}"
+        parts.append(street_part)
+        seat_addr = ", ".join(parts)
+
+    return ContractorVerificationResult(
+        country_code=row.get("country_code", "BG"),
+        identifier=row.get("eik", clean_eik),
+        company_name=row.get("legal_name"),
+        legal_status=legal_st,
+        vat_status=vat_st,
+        vat_registration_date=str(row.get("vat_registration_date")) if row.get("vat_registration_date") else None,
+        vat_deregistration_date=str(row.get("vat_deregistration_date")) if row.get("vat_deregistration_date") else None,
+        vat_legal_basis=row.get("vat_legal_basis"),
+        address=row.get("address"),
+        seat_address=seat_addr or row.get("address"),
+        mol_name=row.get("mol_name"),
+        trade_outlets=row.get("trade_outlets") or [],
+        managers=row.get("managers") or [],
+        nkids=row.get("nkids") or [],
+        source="ACCOUNTING_PARTNERS",
+        is_valid_for_tax_credit=True,
+        issues=[],
+        raw_data=row,
+    )
+
+
 def verify_party_against_partner(
     party: Optional[Party],
     role: str = "supplier",
@@ -335,6 +432,19 @@ def verify_party_against_partner(
         c_res = active_verifier.verify_sync(clean_eik)
     except Exception as exc:
         logger.warning("Error looking up contractor %s: %s", clean_eik, exc)
+
+    if (not c_res or not c_res.company_name) and not getattr(active_verifier, "offline_mode", False):
+        try:
+            synced_row = sync_partner_via_n8n(clean_eik)
+            if synced_row and synced_row.get("legal_name"):
+                c_res = build_contractor_result_from_partner_dict(synced_row, clean_eik)
+                if hasattr(active_verifier, "cache") and active_verifier.cache is not None:
+                    try:
+                        active_verifier.cache.set(c_res)
+                    except Exception:
+                        pass
+        except Exception as sync_exc:
+            logger.warning("Failed to auto-sync partner %s via n8n: %s", clean_eik, sync_exc)
 
     if not c_res or not c_res.company_name:
         return PartyCheckResult(

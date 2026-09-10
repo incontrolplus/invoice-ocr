@@ -293,3 +293,74 @@ def test_invoices_process_critical_divergence_routes_to_hitl(mock_verifier):
         assert len(data["hitl_reasons"]) > 0
         assert "parties_verification" in data
         assert data["parties_verification"]["has_critical_mismatch"] is True
+
+
+def test_verify_party_auto_syncs_via_n8n():
+    """When an EIK is absent from local DB, verify_party_against_partner triggers n8n sync and succeeds."""
+    synced_partner_data = {
+        "eik": "205555555",
+        "legal_name": "НОВ ПАРТНЬОР ЕООД",
+        "transliteration": "Nov Partner EOOD",
+        "legal_status": "ACTIVE",
+        "vat_status": "REGISTERED",
+        "address": "гр. Пловдив, бул. Марица 10",
+        "mol_name": "Стоян Стоянов",
+    }
+
+    mock_empty_verifier = MagicMock()
+    mock_empty_verifier.verify_sync.return_value = None
+    mock_empty_verifier.cache = MagicMock()
+    mock_empty_verifier.offline_mode = False
+
+    with patch("invoice_core.partner_verification.sync_partner_via_n8n", return_value=synced_partner_data) as mock_sync:
+        p = Party(name="Нов Партньор ЕООД", eik="205555555", vat_number="BG205555555")
+        res = verify_party_against_partner(p, role="supplier", verifier=mock_empty_verifier)
+
+        mock_sync.assert_called_once_with("205555555")
+        assert res.db_partner_found is True
+        assert res.match_status == "EXACT"
+        assert res.db_canonical_name == "НОВ ПАРТНЬОР ЕООД"
+        assert res.is_critical_mismatch is False
+        mock_empty_verifier.cache.set.assert_called_once()
+
+
+def test_verify_party_n8n_sync_not_found():
+    """When an EIK is absent from DB and n8n sync returns None, result is gracefully NOT_IN_DB."""
+    mock_empty_verifier = MagicMock()
+    mock_empty_verifier.verify_sync.return_value = None
+    mock_empty_verifier.cache = MagicMock()
+    mock_empty_verifier.offline_mode = False
+
+    with patch("invoice_core.partner_verification.sync_partner_via_n8n", return_value=None):
+        p = Party(name="Неизвестна Фирма ООД", eik="999999999")
+        res = verify_party_against_partner(p, role="supplier", verifier=mock_empty_verifier)
+
+        assert res.db_partner_found is False
+        assert res.match_status == "NOT_IN_DB"
+        assert res.is_critical_mismatch is False
+        assert "999999999" in res.details
+
+
+def test_verify_invoice_parties_missing_eik_auto_synced_via_n8n(mock_verifier):
+    """Invoice where supplier is known in DB, but recipient is missing and auto-synced via n8n."""
+    sup = Party(name="Шел България ЕАД", eik="131129282")
+    rec = Party(name="Нов Купувач ЕООД", eik="207777777")
+
+    synced_rec_data = {
+        "eik": "207777777",
+        "legal_name": "НОВ КУПУВАЧ ЕООД",
+        "legal_status": "ACTIVE",
+        "vat_status": "REGISTERED",
+        "address": "гр. Варна",
+    }
+
+    with patch("invoice_core.partner_verification.sync_partner_via_n8n", return_value=synced_rec_data):
+        report = verify_invoice_parties(sup, rec, verifier=mock_verifier)
+
+        assert report.supplier_check.db_partner_found is True
+        assert report.recipient_check.db_partner_found is True
+        assert report.recipient_check.db_canonical_name == "НОВ КУПУВАЧ ЕООД"
+        assert report.both_eiks_in_db is True
+        assert report.has_critical_mismatch is False
+        assert report.requires_hitl is False
+
