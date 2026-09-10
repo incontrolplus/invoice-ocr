@@ -16,7 +16,8 @@ import argparse
 import asyncio
 import base64
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+import dataclasses
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
 import json
@@ -1012,8 +1013,25 @@ async def process_single_invoice(
             )
         invoice = res["invoice"]
 
+        # Statutory Contractor & Partner Verification against accounting.partners
+        from invoice_core.partner_verification import verify_invoice_parties
+        parties_rep = verify_invoice_parties(invoice.supplier, invoice.recipient)
+
+        if invoice.raw_ocr_evidence is None:
+            invoice.raw_ocr_evidence = {}
+        invoice.raw_ocr_evidence["parties_verification"] = parties_rep.to_dict()
+
+        if parties_rep.validation_issues:
+            for iss in parties_rep.validation_issues:
+                if iss.severity == "error":
+                    invoice.validation.errors.append(iss)
+                else:
+                    invoice.validation.warnings.append(iss)
+            invoice.validation.is_valid = len(invoice.validation.errors) == 0
+
         full_result = _invoice_to_dict(invoice, include_raw_evidence=True)
         full_result["file_name"] = file.filename
+        full_result["parties_verification"] = parties_rep.to_dict()
 
         # Persist document to database & storage
         doc_id = uuid.uuid4().hex
@@ -1027,6 +1045,10 @@ async def process_single_invoice(
                 processing_time=proc_time,
                 webhook_url=webhook_url,
             )
+            if parties_rep.has_critical_mismatch:
+                doc_rec.status = "needs_review"
+                doc_rec.is_valid = False
+                db.commit()
             saved_dict = doc_rec.to_dict(include_raw_evidence=include_raw_evidence)
 
         # Dispatch Webhook notification asynchronously to ERP if requested
@@ -1215,9 +1237,27 @@ async def ingest_email_webhook(
                 raise ValueError(f"OCR processing failed: {res.get('error')}")
 
             inv = res["invoice"]
+
+            # Statutory Contractor & Partner Verification against accounting.partners
+            from invoice_core.partner_verification import verify_invoice_parties
+            parties_rep = verify_invoice_parties(inv.supplier, inv.recipient)
+
+            if inv.raw_ocr_evidence is None:
+                inv.raw_ocr_evidence = {}
+            inv.raw_ocr_evidence["parties_verification"] = parties_rep.to_dict()
+
+            if parties_rep.validation_issues:
+                for iss in parties_rep.validation_issues:
+                    if iss.severity == "error":
+                        inv.validation.errors.append(iss)
+                    else:
+                        inv.validation.warnings.append(iss)
+                inv.validation.is_valid = len(inv.validation.errors) == 0
+
             full_res = _invoice_to_dict(inv, include_raw_evidence=True)
             full_res["file_name"] = att.filename
             full_res["source_channel"] = "email"
+            full_res["parties_verification"] = parties_rep.to_dict()
             full_res["email_metadata"] = {
                 "sender": parsed_email.sender,
                 "recipient": parsed_email.recipient,
@@ -1239,6 +1279,10 @@ async def ingest_email_webhook(
                     processing_time=proc_time,
                     webhook_url=webhook_url,
                 )
+                if parties_rep.has_critical_mismatch:
+                    doc_rec.status = "needs_review"
+                    doc_rec.is_valid = False
+                    db.commit()
                 saved_dict = doc_rec.to_dict()
 
             # Reverse notification delivery
@@ -1261,6 +1305,9 @@ async def ingest_email_webhook(
                 "currency": saved_dict.get("currency"),
                 "status": saved_dict.get("status"),
                 "is_valid": saved_dict.get("is_valid"),
+                "requires_hitl": parties_rep.requires_hitl,
+                "hitl_reasons": parties_rep.hitl_reasons,
+                "parties_verification": parties_rep.to_dict(),
                 "error_count": saved_dict.get("error_count", 0),
                 "warning_count": saved_dict.get("warning_count", 0),
                 "processing_time_sec": round(proc_time, 2),
@@ -1359,10 +1406,70 @@ async def classify_document_endpoint(
             )
             if ocr_res.get("status") == "success" and ocr_res.get("invoice") is not None:
                 inv = ocr_res["invoice"]
+
+                # Statutory Contractor & Partner Verification against accounting.partners
+                from invoice_core.partner_verification import verify_invoice_parties
+                parties_rep = verify_invoice_parties(inv.supplier, inv.recipient)
+
+                if inv.raw_ocr_evidence is None:
+                    inv.raw_ocr_evidence = {}
+                inv.raw_ocr_evidence["parties_verification"] = parties_rep.to_dict()
+
+                if parties_rep.validation_issues:
+                    for iss in parties_rep.validation_issues:
+                        if iss.severity == "error":
+                            inv.validation.errors.append(iss)
+                        else:
+                            inv.validation.warnings.append(iss)
+                    inv.validation.is_valid = len(inv.validation.errors) == 0
+
                 full_res = _invoice_to_dict(inv, include_raw_evidence=True)
                 full_res["file_name"] = file_name
                 full_res["source_channel"] = "MANUAL_UPLOAD"
                 full_res["classification"] = classification.to_dict()
+                full_res["parties_verification"] = parties_rep.to_dict()
+
+                if parties_rep.has_critical_mismatch:
+                    # Critical discrepancy: Recognized name is completely different from accounting.partners registry!
+                    # Do NOT classify into FAKTURI / do NOT auto-route to invoices!
+                    # Mark document for human-in-the-loop review.
+                    logger.warning(
+                        "Classification rejected for %s due to critical contractor name divergence: %s",
+                        file_name, parties_rep.hitl_reasons,
+                    )
+                    with get_db_session() as db:
+                        doc_rec = save_document_to_db(
+                            db=db,
+                            doc_id=doc_id,
+                            file_name=file_name,
+                            source_path=tmp_path,
+                            ocr_result=full_res,
+                            processing_time=proc_time,
+                            webhook_url=webhook_url,
+                        )
+                        doc_rec.status = "needs_review"
+                        doc_rec.is_valid = False
+                        db.commit()
+                        saved_dict = doc_rec.to_dict()
+
+                    return {
+                        "status": "needs_review",
+                        "document_id": doc_id,
+                        "file_name": file_name,
+                        "category": DocumentCategory.NEKLASIFITSIRANI.value,
+                        "category_code": "UNCLASSIFIED_NEEDS_REVIEW",
+                        "confidence": round(classification.confidence, 4),
+                        "matched_keywords": classification.matched_keywords,
+                        "is_obscured": False,
+                        "obscuration_reason": None,
+                        "subdocuments": [s.to_dict() for s in classification.subdocuments],
+                        "routing_action": "hitl_review",
+                        "requires_hitl": True,
+                        "hitl_reasons": parties_rep.hitl_reasons,
+                        "parties_verification": parties_rep.to_dict(),
+                        "processing_time_sec": round(proc_time, 3),
+                        "invoice_data": saved_dict,
+                    }
 
                 with get_db_session() as db:
                     doc_rec = save_document_to_db(
@@ -1388,6 +1495,9 @@ async def classify_document_endpoint(
                     "obscuration_reason": classification.obscuration_reason,
                     "subdocuments": [s.to_dict() for s in classification.subdocuments],
                     "routing_action": "routed_to_invoices",
+                    "requires_hitl": parties_rep.requires_hitl,
+                    "hitl_reasons": parties_rep.hitl_reasons,
+                    "parties_verification": parties_rep.to_dict(),
                     "processing_time_sec": round(proc_time, 3),
                     "invoice_data": saved_dict,
                 }
@@ -1605,6 +1715,23 @@ async def ingest_docs_email_webhook(
                 )
                 if res.get("status") == "success" and res.get("invoice") is not None:
                     inv = res["invoice"]
+
+                    # Statutory Contractor & Partner Verification against accounting.partners
+                    from invoice_core.partner_verification import verify_invoice_parties
+                    parties_rep = verify_invoice_parties(inv.supplier, inv.recipient)
+
+                    if inv.raw_ocr_evidence is None:
+                        inv.raw_ocr_evidence = {}
+                    inv.raw_ocr_evidence["parties_verification"] = parties_rep.to_dict()
+
+                    if parties_rep.validation_issues:
+                        for iss in parties_rep.validation_issues:
+                            if iss.severity == "error":
+                                inv.validation.errors.append(iss)
+                            else:
+                                inv.validation.warnings.append(iss)
+                        inv.validation.is_valid = len(inv.validation.errors) == 0
+
                     full_res = _invoice_to_dict(inv, include_raw_evidence=True)
                     full_res["file_name"] = att.filename
                     full_res["source_channel"] = "email_docs"
@@ -1616,6 +1743,7 @@ async def ingest_docs_email_webhook(
                         "message_id": parsed_email.message_id,
                     }
                     full_res["classification"] = classification.to_dict()
+                    full_res["parties_verification"] = parties_rep.to_dict()
 
                     with get_db_session() as db:
                         doc_rec = save_document_to_db(
@@ -1627,6 +1755,10 @@ async def ingest_docs_email_webhook(
                             processing_time=proc_time,
                             webhook_url=webhook_url,
                         )
+                        if parties_rep.has_critical_mismatch:
+                            doc_rec.status = "needs_review"
+                            doc_rec.is_valid = False
+                            db.commit()
                         saved_dict = doc_rec.to_dict()
 
                     notif_res = await dispatch_reverse_notifications_bundle(
@@ -1636,13 +1768,20 @@ async def ingest_docs_email_webhook(
                         hitl_base_url=hitl_base_url,
                     )
 
+                    cat_val = DocumentCategory.NEKLASIFITSIRANI.value if parties_rep.has_critical_mismatch else classification.category.value
+                    cat_code = "UNCLASSIFIED_NEEDS_REVIEW" if parties_rep.has_critical_mismatch else classification.category.name
+                    act_routing = "hitl_review" if parties_rep.has_critical_mismatch else "routed_to_invoices"
+
                     results.append({
                         "document_id": doc_id,
                         "file_name": att.filename,
-                        "category": classification.category.value,
-                        "category_code": classification.category.name,
+                        "category": cat_val,
+                        "category_code": cat_code,
                         "confidence": round(classification.confidence, 4),
-                        "routing_action": "routed_to_invoices",
+                        "routing_action": act_routing,
+                        "requires_hitl": parties_rep.requires_hitl,
+                        "hitl_reasons": parties_rep.hitl_reasons,
+                        "parties_verification": parties_rep.to_dict(),
                         "invoice_number": saved_dict.get("invoice_number"),
                         "supplier_name": saved_dict.get("supplier_name"),
                         "total_amount": saved_dict.get("total_amount"),

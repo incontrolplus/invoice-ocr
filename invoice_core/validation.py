@@ -797,6 +797,19 @@ def validate_invoice(
 
     if verify_contractors:
         all_issues.extend(validate_contractor_eligibility(invoice, verifier=contractor_verifier))
+        try:
+            from invoice_core.partner_verification import verify_invoice_parties
+            parties_rep = verify_invoice_parties(
+                invoice.supplier,
+                invoice.recipient,
+                verifier=contractor_verifier,
+            )
+            result.parties_verification_report = parties_rep
+            all_issues.extend(parties_rep.validation_issues)
+            if invoice.raw_ocr_evidence is not None:
+                invoice.raw_ocr_evidence["parties_verification"] = parties_rep.to_dict()
+        except Exception as exc:
+            logger.warning("Partner verification against accounting.partners failed: %s", exc)
 
     for issue in all_issues:
         if issue.severity == "error":

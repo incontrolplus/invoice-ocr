@@ -230,6 +230,12 @@ class DocumentRecord(Base):
         if include_raw_evidence and "raw_ocr_evidence" in ocr:
             result["raw_ocr_evidence"] = ocr["raw_ocr_evidence"]
 
+        if "parties_verification" in ocr:
+            result["parties_verification"] = ocr["parties_verification"]
+            if isinstance(ocr["parties_verification"], dict):
+                result["requires_hitl"] = ocr["parties_verification"].get("requires_hitl", False)
+                result["hitl_reasons"] = ocr["parties_verification"].get("hitl_reasons", [])
+
         if getattr(self, "_feedback_learning", None):
             result["feedback_learning"] = self._feedback_learning
 
@@ -586,7 +592,7 @@ def save_document_to_db(
         tax_base=_to_float(fin.get("tax_base")),
         vat_amount=_to_float(fin.get("vat_amount")),
         total_amount=_to_float(fin.get("total_amount_due")),
-        ocr_result_json=json.dumps(ocr_result, ensure_ascii=False),
+        ocr_result_json=json.dumps(ocr_result, default=str, ensure_ascii=False),
         webhook_url=webhook_url,
         webhook_status="pending" if webhook_url else "none",
     )

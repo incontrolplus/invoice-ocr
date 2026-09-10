@@ -176,9 +176,34 @@ def reconcile_party_with_contractor_master(
     if not c_res or not c_res.company_name:
         return
 
-    # 1. Canonical legal name alignment
-    if not party.name or len(party.name.strip()) < 3 or (c_res.company_name and party.name.upper() not in c_res.company_name.upper()):
-        party.name = c_res.company_name
+    # 1. Canonical legal name alignment & divergence check
+    from invoice_core.partner_verification import compute_company_name_similarity
+    candidate_names = [c_res.company_name]
+    if c_res.raw_data:
+        if c_res.raw_data.get("transliteration"):
+            candidate_names.append(c_res.raw_data.get("transliteration"))
+        if c_res.raw_data.get("trade_name"):
+            candidate_names.append(c_res.raw_data.get("trade_name"))
+        if c_res.raw_data.get("ocr_aliases") and isinstance(c_res.raw_data.get("ocr_aliases"), list):
+            candidate_names.extend(c_res.raw_data.get("ocr_aliases"))
+
+    score, match_status, matched_cand = compute_company_name_similarity(party.name, candidate_names)
+
+    if raw_ocr_evidence is not None:
+        raw_ocr_evidence[f"raw_{role}_name"] = party.name
+        raw_ocr_evidence[f"{role}_match_status"] = match_status
+        raw_ocr_evidence[f"{role}_similarity_score"] = score
+
+    if match_status == "DIVERGENT":
+        logger.warning(
+            "Critical company name divergence for %s: recognized '%s', but registry EIK %s is '%s'",
+            role, party.name, ident, c_res.company_name,
+        )
+        # Keep the recognized name untouched so validator flags the discrepancy!
+    else:
+        # For EXACT or SIMILAR (e.g. OCR typos, abbreviations, trade names), align with canonical name
+        if not party.name or len(party.name.strip()) < 3 or (c_res.company_name and party.name.upper() not in c_res.company_name.upper()):
+            party.name = c_res.company_name
 
     # 2. Canonical MOL alignment
     if not party.mol and c_res.mol_name:
