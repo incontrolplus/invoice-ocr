@@ -372,6 +372,35 @@ class TestContractorVerification:
         assert res.source == "OFFLINE_UNVERIFIED"
         assert any("не е намерен" in issue for issue in res.issues)
 
+    @pytest.mark.anyio
+    async def test_supabase_contractor_query_flow(self):
+        """Test query against Supabase contractors table."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+        verifier = ContractorVerifier(offline_mode=False)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = [{
+            "id": "abc-123",
+            "country_code": "BG",
+            "eik": "999999994",
+            "legal_name": "„СУПАБЕЙС ТЕСТ“ ЕООД",
+            "legal_status": "ACTIVE",
+            "vat_status": "REGISTERED",
+            "vat_registration_date": "2020-01-01",
+            "vat_deregistration_date": None,
+            "vat_legal_basis": "чл. 96 ЗДДС",
+            "address": "гр. София",
+        }]
+
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_resp
+            res = await verifier._query_supabase_contractor_async("BG", "999999994")
+            assert res is not None
+            assert res.source == "SUPABASE_CONTRACTORS"
+            assert res.company_name == "„СУПАБЕЙС ТЕСТ“ ЕООД"
+            assert res.is_valid_for_tax_credit is True
+
+
 
 
 # ---------------------------------------------------------------------------

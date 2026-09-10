@@ -45,6 +45,13 @@ DEFAULT_CACHE_TTL_SECONDS = 86400  # 24 hours
 VIES_REST_URL = "https://ec.europa.eu/taxation_customs/vies/rest-api/ms/{country}/vat/{vat}"
 DEFAULT_REQUEST_TIMEOUT = 5.0  # seconds
 
+# Central Supabase Contractor Master Registry configuration
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "http://100.83.83.8:8002").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get(
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3ODIyMjY3OTksImV4cCI6MTkzOTkwNjc5OX0.5DAqw9x0gC7ZH-0UPg4eEkP2LqcW_PRk6O0AEISJUG4",
+)
+
 # EU Member State ISO-2 country codes
 EU_MEMBER_STATES = {
     "AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "EL", "ES", "FI", "FR",
@@ -1187,7 +1194,15 @@ class ContractorVerifier:
             self.cache.set(res)
             return res
 
-        # 6. Offline Mode Fail-Secure Exit
+        # 6. Central Supabase public.contractors Table Query
+        if not self.offline_mode:
+            supabase_res = await self._query_supabase_contractor_async(country, ident)
+            if supabase_res:
+                self._evaluate_date_tax_event(supabase_res, date_tax_event)
+                self.cache.set(supabase_res)
+                return supabase_res
+
+        # 7. Offline Mode Fail-Secure Exit
         if self.offline_mode:
             issues = [
                 f"Контрагент с ЕИК '{ident}' не е намерен в локалния регистър на НАП или вендор профилите "
@@ -1205,15 +1220,15 @@ class ContractorVerifier:
             self._evaluate_date_tax_event(res, date_tax_event)
             return res
 
-        # 4. Online VIES API Query (for EU member states)
+        # 8. Online VIES API Query (for EU member states)
         if country in EU_MEMBER_STATES and country != "BG":
             return await self._query_vies_rest_async(country, ident, date_tax_event)
 
-        # 5. Bulgarian Registry (TR / NRA) Online Query
+        # 9. Bulgarian Registry (TR / NRA) Online Query
         if country == "BG":
             return await self._query_bg_registries_async(ident, date_tax_event)
 
-        # 6. Non-EU international contractor (e.g. US, UK, CH)
+        # 10. Non-EU international contractor (e.g. US, UK, CH)
         res = ContractorVerificationResult(
             country_code=country,
             identifier=ident,
@@ -1226,6 +1241,113 @@ class ContractorVerifier:
         self._evaluate_date_tax_event(res, date_tax_event)
         self.cache.set(res)
         return res
+
+    async def _query_supabase_contractor_async(
+        self,
+        country: str,
+        ident: str,
+    ) -> ContractorVerificationResult | None:
+        """Query central Supabase public.contractors table via PostgREST."""
+        if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+            return None
+
+        try:
+            url = f"{SUPABASE_URL}/rest/v1/contractors"
+            params = {
+                "select": "*",
+                "country_code": f"eq.{country}",
+                "or": f"(eik.eq.{ident},vat_number.eq.{ident},vat_number.eq.{country}{ident})",
+                "limit": "1",
+            }
+            headers = {
+                "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+                "Content-Type": "application/json",
+            }
+            async with httpx.AsyncClient(timeout=min(self.timeout, 2.5)) as client:
+                resp = await client.get(url, params=params, headers=headers)
+                if resp.status_code == 200:
+                    rows = resp.json()
+                    if rows and isinstance(rows, list):
+                        row = rows[0]
+                        legal_st_val = (row.get("legal_status") or "ACTIVE").upper()
+                        vat_st_val = (row.get("vat_status") or "REGISTERED").upper()
+                        try:
+                            legal_st = CompanyStatus(legal_st_val)
+                        except ValueError:
+                            legal_st = CompanyStatus.ACTIVE
+                        try:
+                            vat_st = VatRegistrationStatus(vat_st_val)
+                        except ValueError:
+                            vat_st = VatRegistrationStatus.REGISTERED
+
+                        issues: list[str] = []
+                        is_valid_credit = True
+                        if legal_st in (CompanyStatus.BANKRUPTCY, CompanyStatus.LIQUIDATION, CompanyStatus.DEREGISTERED_DELETED):
+                            is_valid_credit = False
+                            issues.append(f"Фирмата е в неактивен правен статус в Търговския регистър: {legal_st.value}")
+                        if vat_st == VatRegistrationStatus.DEREGISTERED:
+                            is_valid_credit = False
+                            issues.append("Фирмата е ДЕРЕГИСТРИРАНА по ЗДДС в НАП.")
+                        elif vat_st == VatRegistrationStatus.NOT_REGISTERED:
+                            is_valid_credit = False
+                            issues.append("Фирмата НЕ Е регистрирана по ЗДДС.")
+
+                        return ContractorVerificationResult(
+                            country_code=row.get("country_code", country),
+                            identifier=row.get("eik", ident),
+                            company_name=row.get("legal_name"),
+                            legal_status=legal_st,
+                            vat_status=vat_st,
+                            vat_registration_date=str(row.get("vat_registration_date")) if row.get("vat_registration_date") else None,
+                            vat_deregistration_date=str(row.get("vat_deregistration_date")) if row.get("vat_deregistration_date") else None,
+                            vat_legal_basis=row.get("vat_legal_basis"),
+                            address=row.get("address"),
+                            source="SUPABASE_CONTRACTORS",
+                            is_valid_for_tax_credit=is_valid_credit,
+                            issues=issues,
+                            raw_data=row,
+                        )
+        except Exception as exc:
+            logger.debug("Supabase contractor query skipped: %s", exc)
+        return None
+
+    async def _upsert_supabase_contractor_async(
+        self,
+        res: ContractorVerificationResult,
+    ) -> None:
+        """Asynchronously upsert newly verified contractor into Supabase public.contractors."""
+        if res.source in ("SUPABASE_CONTRACTORS", "OFFLINE_UNVERIFIED", "MOCK_REGISTRY"):
+            return
+        if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+            return
+
+        try:
+            url = f"{SUPABASE_URL}/rest/v1/contractors"
+            headers = {
+                "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "resolution=merge-duplicates,return=representation",
+            }
+            body = {
+                "country_code": res.country_code,
+                "eik": res.identifier,
+                "vat_number": f"{res.country_code}{res.identifier}" if res.vat_status == VatRegistrationStatus.REGISTERED else None,
+                "legal_name": res.company_name or f"Контрагент {res.identifier}",
+                "address": res.address,
+                "legal_status": res.legal_status.value,
+                "vat_status": res.vat_status.value,
+                "vat_registration_date": res.vat_registration_date,
+                "vat_deregistration_date": res.vat_deregistration_date,
+                "vat_legal_basis": res.vat_legal_basis,
+                "is_verified": res.is_valid_for_tax_credit,
+                "verified_source": res.source,
+            }
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                await client.post(url, json=body, headers=headers)
+        except Exception as exc:
+            logger.debug("Background Supabase contractor upsert error: %s", exc)
 
     async def _query_vies_rest_async(
         self,
