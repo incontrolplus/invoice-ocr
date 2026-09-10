@@ -1,6 +1,6 @@
-# Detelina-DP EOOD Profile
+# Detelina-DP OOD Profile
 id: detelina
-name: "ДЕТЕЛИНА-ДП ЕООД"
+name: "ДЕТЕЛИНА ДП ООД"
 eik: "114609507"
 alternate_eiks:
   - "114609407"
@@ -13,5 +13,7 @@ keywords:
   - "детелина"
   - "детелина-дп"
   - "детелина дп"
+  - "детелина-лп"
+  - "детелина лп"
 ocr:
   dot_matrix: true
