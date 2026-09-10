@@ -1,10 +1,7 @@
 name: CI / Quality Assurance
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -22,7 +19,7 @@ jobs:
       - name: Install Tesseract 5 with Bulgarian & English packs
         run: |
           sudo apt-get update
-          sudo apt-get install -y tesseract-ocr tesseract-ocr-bul tesseract-ocr-eng libgl1-mesa-glx
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-bul tesseract-ocr-eng libgl1
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
