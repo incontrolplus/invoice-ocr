@@ -595,6 +595,14 @@ def _extract_and_validate_from_tokens(
         contractor_verifier=contractor_verifier,
     )
 
+    # Layer 6: Automated Accounting Operation Generation
+    try:
+        from .accounting_engine import AccountingEngine
+        engine = AccountingEngine()
+        invoice.accounting_operation = engine.create_operation(invoice)
+    except Exception as acc_err:
+        logger.debug("Accounting operation generation note: %s", acc_err)
+
     return invoice
 
 
@@ -814,6 +822,12 @@ def process_invoice(
                 fast_invoice.validation.is_valid = len(fast_invoice.validation.errors) == 0
 
             if fast_invoice.validation.is_valid:
+                try:
+                    from .accounting_engine import AccountingEngine
+                    engine = AccountingEngine()
+                    fast_invoice.accounting_operation = engine.create_operation(fast_invoice)
+                except Exception as acc_err:
+                    logger.debug("Fast path accounting operation generation note: %s", acc_err)
                 logger.info("Fast Path successful: %s processed in <0.1s without OCR", path.name)
                 return fast_invoice
             logger.info(

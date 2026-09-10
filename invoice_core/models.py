@@ -614,6 +614,7 @@ class Invoice:
     fiscal_report: FiscalMemoryReportDetails | None = None
     goods_receipt: GoodsReceiptDetails | None = None
     legal_compliance_report: LegalComplianceReport | None = None
+    accounting_operation: Any | None = None
 
 
 # ---------------------------------------------------------------------------
