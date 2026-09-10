@@ -1288,24 +1288,49 @@ class ContractorVerifier:
             return None
 
         try:
-            url = f"{SUPABASE_URL}/rest/v1/contractors"
+            endpoints = [
+                (
+                    f"{SUPABASE_URL}/rest/v1/partners",
+                    {
+                        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+                        "Content-Type": "application/json",
+                        "Accept-Profile": "accounting",
+                    },
+                    "ACCOUNTING_PARTNERS",
+                ),
+                (
+                    f"{SUPABASE_URL}/rest/v1/contractors",
+                    {
+                        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    "SUPABASE_CONTRACTORS",
+                ),
+            ]
             params = {
                 "select": "*",
                 "country_code": f"eq.{country}",
                 "or": f"(eik.eq.{ident},vat_number.eq.{ident},vat_number.eq.{country}{ident})",
                 "limit": "1",
             }
-            headers = {
-                "apikey": SUPABASE_SERVICE_ROLE_KEY,
-                "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-                "Content-Type": "application/json",
-            }
             async with httpx.AsyncClient(timeout=min(self.timeout, 2.5)) as client:
-                resp = await client.get(url, params=params, headers=headers)
-                if resp.status_code == 200:
-                    rows = resp.json()
-                    if rows and isinstance(rows, list):
-                        row = rows[0]
+                row = None
+                matched_source = "SUPABASE_CONTRACTORS"
+                for ep_url, ep_headers, ep_src in endpoints:
+                    try:
+                        resp = await client.get(ep_url, params=params, headers=ep_headers)
+                        if resp.status_code == 200:
+                            rows = resp.json()
+                            if rows and isinstance(rows, list):
+                                row = rows[0]
+                                matched_source = ep_src
+                                break
+                    except Exception:
+                        continue
+
+                if row:
                         legal_st_val = (row.get("legal_status") or "ACTIVE").upper()
                         vat_st_val = (row.get("vat_status") or "REGISTERED").upper()
                         try:

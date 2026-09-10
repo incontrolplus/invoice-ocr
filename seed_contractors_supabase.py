@@ -1070,7 +1070,50 @@ ON CONFLICT (country_code, eik) DO UPDATE SET
     managers = CASE WHEN EXCLUDED.managers != '[]'::jsonb THEN EXCLUDED.managers ELSE public.contractors.managers END,
     updated_at = now();
 """
+        sql_accounting = f"""
+INSERT INTO accounting.partners (
+    country_code, eik, vat_number, legal_name, trade_name,
+    legal_form, mol_name, address, city, legal_status,
+    vat_status, vat_registration_date, vat_deregistration_date,
+    vat_legal_basis, is_verified, verified_source, ocr_aliases, notes,
+    transliteration, seat_settlement, seat_area, seat_street, seat_street_number,
+    seat_post_code, primary_nkid_code, trade_outlets, managers
+) VALUES (
+    '{country_code}', '{eik}', {vat_number}, '{legal_name}', {trade_name},
+    {legal_form}, {mol_name}, {address}, {city}, '{legal_status}',
+    '{vat_status}', {vat_reg_date}, {vat_dereg_date},
+    {vat_legal_basis}, true, 'COMMERCIAL_REGISTER', {aliases_sql}, {notes},
+    {translit}, {seat_settlement}, {seat_area}, {seat_street}, {seat_street_num},
+    {seat_post_code}, {primary_nkid}, {trade_outlets_sql}, {managers_sql}
+)
+ON CONFLICT (country_code, eik) DO UPDATE SET
+    vat_number = EXCLUDED.vat_number,
+    legal_name = EXCLUDED.legal_name,
+    trade_name = EXCLUDED.trade_name,
+    legal_form = EXCLUDED.legal_form,
+    mol_name = COALESCE(EXCLUDED.mol_name, accounting.partners.mol_name),
+    address = EXCLUDED.address,
+    city = EXCLUDED.city,
+    legal_status = EXCLUDED.legal_status,
+    vat_status = EXCLUDED.vat_status,
+    vat_registration_date = EXCLUDED.vat_registration_date,
+    vat_deregistration_date = EXCLUDED.vat_deregistration_date,
+    vat_legal_basis = EXCLUDED.vat_legal_basis,
+    ocr_aliases = EXCLUDED.ocr_aliases,
+    notes = EXCLUDED.notes,
+    transliteration = COALESCE(EXCLUDED.transliteration, accounting.partners.transliteration),
+    seat_settlement = COALESCE(EXCLUDED.seat_settlement, accounting.partners.seat_settlement),
+    seat_area = COALESCE(EXCLUDED.seat_area, accounting.partners.seat_area),
+    seat_street = COALESCE(EXCLUDED.seat_street, accounting.partners.seat_street),
+    seat_street_number = COALESCE(EXCLUDED.seat_street_number, accounting.partners.seat_street_number),
+    seat_post_code = COALESCE(EXCLUDED.seat_post_code, accounting.partners.seat_post_code),
+    primary_nkid_code = COALESCE(EXCLUDED.primary_nkid_code, accounting.partners.primary_nkid_code),
+    trade_outlets = CASE WHEN EXCLUDED.trade_outlets != '[]'::jsonb THEN EXCLUDED.trade_outlets ELSE accounting.partners.trade_outlets END,
+    managers = CASE WHEN EXCLUDED.managers != '[]'::jsonb THEN EXCLUDED.managers ELSE accounting.partners.managers END,
+    updated_at = now();
+"""
         lines.append(sql.strip())
+        lines.append(sql_accounting.strip())
 
     lines.append("COMMIT;")
     lines.append("NOTIFY pgrst, 'reload schema';")

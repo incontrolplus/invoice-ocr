@@ -135,3 +135,42 @@ def test_contractor_verification_result_companybook_fields():
     assert data["seat_address"] is not None
     assert data["mol_name"] == "Георги Ангелов Георгиев"
     assert len(data["trade_outlets"]) >= 1
+
+
+@pytest.mark.anyio
+async def test_accounting_partners_schema_query():
+    """Verify ContractorVerifier queries accounting.partners via PostgREST with Accept-Profile."""
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from contractor_verification import ContractorVerifier
+
+    verifier = ContractorVerifier(offline_mode=False)
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = [{
+        "id": "11111111-2222-3333-4444-555555555555",
+        "country_code": "BG",
+        "eik": "203818240",
+        "legal_name": "„ДЖЕНТЪЛМЕН ГРУП“ ЕООД",
+        "legal_status": "ACTIVE",
+        "vat_status": "REGISTERED",
+        "seat_settlement": "гр. София",
+        "seat_street": "ул. Суходолска",
+        "seat_street_number": "201",
+        "mol_name": "Георги Ангелов Георгиев",
+        "trade_outlets": [{"name": "Магазин Nargile.bg", "address": "гр. София, бул. Патриарх Евтимий 77"}],
+    }]
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_resp
+        res = await verifier._query_supabase_contractor_async("BG", "203818240")
+
+        assert res is not None
+        assert res.identifier == "203818240"
+        assert res.company_name == "„ДЖЕНТЪЛМЕН ГРУП“ ЕООД"
+        assert res.mol_name == "Георги Ангелов Георгиев"
+        assert "Суходолска 201" in res.seat_address
+        assert len(res.trade_outlets) == 1
+        # Verify call headers included Accept-Profile: accounting
+        call_args = mock_get.call_args_list[0]
+        assert call_args.kwargs["headers"].get("Accept-Profile") == "accounting"
+

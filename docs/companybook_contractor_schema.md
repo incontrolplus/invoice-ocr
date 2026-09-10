@@ -1,11 +1,12 @@
-# CompanyBook API Specification & Contractors Schema Architecture
+# CompanyBook API Specification & Accounting Partners Schema Architecture
 
 ## 1. Резюме и контекст (Executive Summary)
 
-За гарантиране на 100% отчетност и съответствие със законовите изисквания по чл. 114 от ЗДДС (относно задължителните реквизити на фактурата – седалище и адрес на управление) и чл. 26 от Наредба Н-18/2006 г. на МФ (относно фискалните бонове и търговските обекти), таблицата `public.contractors` в self-hosted Supabase бе разширена до 63 атрибута.
+За гарантиране на 100% отчетност и съответствие със законовите изисквания по чл. 114 от ЗДДС (относно задължителните реквизити на фактурата – седалище и адрес на управление) и чл. 26 от Наредба Н-18/2006 г. на МФ (относно фискалните бонове и търговските обекти), в self-hosted Supabase на сървъра `macmini-primary` бе създадена нова схема **`accounting`** с главна таблица **`accounting.partners`**, съдържаща пълните **63 колони**, покриващи на 100% спецификацията на **CompanyBook API**.
 
 Разширението стъпва директно върху официалната спецификация на **CompanyBook API** (`https://companybook.bg/api-docs` и `llms-full.txt`) за ендпойнта за пълна проверка по ЕИК:
 `GET /api/companies/:uic?with_data=true` и `GET /api/companies/:uic/financial?year=YYYY`.
+Таблицата е налична в Supabase Studio и през PostgREST API с хедър `Accept-Profile: accounting`.
 
 ---
 
