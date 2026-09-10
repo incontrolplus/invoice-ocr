@@ -1392,19 +1392,49 @@ def extract_party(
             break
 
     # -----------------------------------------------------------------
-    # 5. Extract Address
+    # 5. Extract Address (Distinguishing Registered Office vs Trade Outlet under Наредба Н-18)
     # -----------------------------------------------------------------
     addr_patterns = [
         r'(?:Адрес|адр\.?|гр\.)\s*[:./-]?\s*(.+)',
         r'(?:ул\.|бул\.|ж\.к\.|кв\.)\s*(.+)',
     ]
-    for pattern in addr_patterns:
-        m = re.search(pattern, region_text, re.IGNORECASE)
-        if m:
-            addr = m.group(0).strip()
-            if len(addr) >= 5:
-                party.address = addr
-                break
+    outlet_marker_pattern = re.compile(
+        r'(?i)\b(?:МАГАЗИН|ОБЕКТ|ФИЛИАЛ|СКЛАД|ТЪРГОВСКИ\s*ОБЕКТ)\b\s*[:./-]?'
+    )
+
+    registered_addr_cand: str | None = None
+    outlet_addr_cand: str | None = None
+
+    # First evaluate fused lines sequentially to respect vertical header layout
+    for line in fused_region:
+        line_txt = line.text.strip()
+        m_outlet = outlet_marker_pattern.search(line_txt)
+        if m_outlet:
+            outlet_addr_part = line_txt[m_outlet.end():].strip()
+            if len(outlet_addr_part) >= 5 and not outlet_addr_cand:
+                outlet_addr_cand = outlet_addr_part
+            continue
+
+        for pattern in addr_patterns:
+            m = re.search(pattern, line_txt, re.IGNORECASE)
+            if m:
+                addr = m.group(0).strip()
+                if len(addr) >= 5 and not registered_addr_cand:
+                    registered_addr_cand = addr
+                    break
+
+    if registered_addr_cand:
+        party.address = registered_addr_cand
+    elif outlet_addr_cand:
+        party.address = outlet_addr_cand
+    else:
+        for pattern in addr_patterns:
+            m = re.search(pattern, region_text, re.IGNORECASE)
+            if m:
+                addr = m.group(0).strip()
+                if len(addr) >= 5:
+                    party.address = addr
+                    break
 
     # -----------------------------------------------------------------
     # 6. Extract Party Name via Candidate Scoring Engine

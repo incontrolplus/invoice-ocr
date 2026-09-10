@@ -148,6 +148,70 @@ def serialize_invoice(invoice: Invoice) -> str:
 
 
 
+def reconcile_party_with_contractor_master(
+    party: Party,
+    role: str = "supplier",
+    metadata: InvoiceMetadata | None = None,
+    raw_ocr_evidence: dict[str, Any] | None = None,
+) -> None:
+    """Reconcile extracted invoice party with statutory Commercial Register and VAT data.
+
+    Ensures:
+    1. Statutory registered office (чл. 114 ЗДДС) is strictly populated into party.address.
+    2. Physical trade outlets / stores (чл. 26 Наредба Н-18) detected by OCR are preserved
+       in metadata.place_issued or raw_ocr_evidence['trade_outlet_address'].
+    3. Missing or OCR-corrupted MOL and legal names are canonicalized against the master registry.
+    """
+    ident = party.eik or party.vat_number
+    if not ident:
+        return
+
+    from contractor_verification import verify_contractor
+    try:
+        c_res = verify_contractor(ident)
+    except Exception as exc:
+        logger.debug("Contractor master reconciliation lookup failed for %s: %s", ident, exc)
+        return
+
+    if not c_res or not c_res.company_name:
+        return
+
+    # 1. Canonical legal name alignment
+    if not party.name or len(party.name.strip()) < 3 or (c_res.company_name and party.name.upper() not in c_res.company_name.upper()):
+        party.name = c_res.company_name
+
+    # 2. Canonical MOL alignment
+    if not party.mol and c_res.mol_name:
+        party.mol = c_res.mol_name
+
+    # 3. VAT number alignment
+    if not party.vat_number and c_res.country_code and c_res.identifier and getattr(c_res.vat_status, "value", str(c_res.vat_status)) == "REGISTERED":
+        party.vat_number = f"{c_res.country_code}{c_res.identifier}"
+
+    # 4. Registered office vs Trade outlet disambiguation (чл. 114 ЗДДС vs Наредба Н-18)
+    canonical_seat = c_res.seat_address or c_res.address
+    if canonical_seat:
+        current_addr = (party.address or "").strip()
+        # Check if current_addr is a known trade outlet or distinct branch
+        is_known_outlet = False
+        if c_res.trade_outlets:
+            for outlet in c_res.trade_outlets:
+                out_addr = outlet.get("address", "")
+                if out_addr and (out_addr.lower() in current_addr.lower() or current_addr.lower() in out_addr.lower()):
+                    is_known_outlet = True
+                    break
+
+        # If current address is distinct from statutory seat, preserve outlet address
+        if current_addr and current_addr != canonical_seat:
+            if metadata and not metadata.place_issued:
+                metadata.place_issued = current_addr
+            if raw_ocr_evidence is not None:
+                raw_ocr_evidence["trade_outlet_address"] = current_addr
+
+        # Always enforce canonical registered office on party.address
+        party.address = canonical_seat
+
+
 def _extract_and_validate_from_tokens(
     raw_evidence: dict[str, Any],
     all_tokens: list[OcrToken],
@@ -307,6 +371,20 @@ def _extract_and_validate_from_tokens(
         sup, rec = extract_parties_for_goods_receipt(lines, tokens)
         invoice.supplier = sup
         invoice.recipient = rec
+        if invoice.raw_ocr_evidence is None:
+            invoice.raw_ocr_evidence = {}
+        reconcile_party_with_contractor_master(
+            invoice.supplier,
+            role="supplier",
+            metadata=invoice.invoice_metadata,
+            raw_ocr_evidence=invoice.raw_ocr_evidence,
+        )
+        reconcile_party_with_contractor_master(
+            invoice.recipient,
+            role="recipient",
+            metadata=invoice.invoice_metadata,
+            raw_ocr_evidence=invoice.raw_ocr_evidence,
+        )
         invoice.line_items = extract_goods_receipt_line_items(lines, tokens)
         curr = gr.total_amount.currency or "BGN"
         invoice.financial_summary = FinancialSummary(
@@ -343,6 +421,22 @@ def _extract_and_validate_from_tokens(
     # Parties
     invoice.supplier = extract_party(lines, tokens, "supplier")
     invoice.recipient = extract_party(lines, tokens, "recipient")
+
+    # Central Contractor Master Registry Reconciliation & Address Disambiguation
+    if invoice.raw_ocr_evidence is None:
+        invoice.raw_ocr_evidence = {}
+    reconcile_party_with_contractor_master(
+        invoice.supplier,
+        role="supplier",
+        metadata=invoice.invoice_metadata,
+        raw_ocr_evidence=invoice.raw_ocr_evidence,
+    )
+    reconcile_party_with_contractor_master(
+        invoice.recipient,
+        role="recipient",
+        metadata=invoice.invoice_metadata,
+        raw_ocr_evidence=invoice.raw_ocr_evidence,
+    )
 
     # Signatories & Compiler (ЗСч чл. 6, ал. 1, т. 5)
     comp_by, recv_by = extract_signatories(lines, tokens, supplier=invoice.supplier, recipient=invoice.recipient)

@@ -1016,17 +1016,33 @@ def generate_sql() -> str:
 
         notes = f"'{item['notes'].replace('\'', '\'\'')}'" if item.get("notes") else "NULL"
 
+        # CompanyBook fields
+        translit = f"'{item['transliteration'].replace('\'', '\'\'')}'" if item.get("transliteration") else "NULL"
+        seat_settlement = f"'{item['seat_settlement'].replace('\'', '\'\'')}'" if item.get("seat_settlement") else "NULL"
+        seat_area = f"'{item['seat_area'].replace('\'', '\'\'')}'" if item.get("seat_area") else "NULL"
+        seat_street = f"'{item['seat_street'].replace('\'', '\'\'')}'" if item.get("seat_street") else "NULL"
+        seat_street_num = f"'{item['seat_street_number'].replace('\'', '\'\'')}'" if item.get("seat_street_number") else "NULL"
+        seat_post_code = f"'{item['seat_post_code'].replace('\'', '\'\'')}'" if item.get("seat_post_code") else "NULL"
+        primary_nkid = f"'{item['primary_nkid_code']}'" if item.get("primary_nkid_code") else "NULL"
+
+        trade_outlets_sql = f"'{json.dumps(item['trade_outlets'], ensure_ascii=False).replace('\'', '\'\'')}'::jsonb" if item.get("trade_outlets") else "'[]'::jsonb"
+        managers_sql = f"'{json.dumps(item['managers'], ensure_ascii=False).replace('\'', '\'\'')}'::jsonb" if item.get("managers") else "'[]'::jsonb"
+
         sql = f"""
 INSERT INTO public.contractors (
     country_code, eik, vat_number, legal_name, trade_name,
     legal_form, mol_name, address, city, legal_status,
     vat_status, vat_registration_date, vat_deregistration_date,
-    vat_legal_basis, is_verified, verified_source, ocr_aliases, notes
+    vat_legal_basis, is_verified, verified_source, ocr_aliases, notes,
+    transliteration, seat_settlement, seat_area, seat_street, seat_street_number,
+    seat_post_code, primary_nkid_code, trade_outlets, managers
 ) VALUES (
     '{country_code}', '{eik}', {vat_number}, '{legal_name}', {trade_name},
     {legal_form}, {mol_name}, {address}, {city}, '{legal_status}',
     '{vat_status}', {vat_reg_date}, {vat_dereg_date},
-    {vat_legal_basis}, true, 'COMMERCIAL_REGISTER', {aliases_sql}, {notes}
+    {vat_legal_basis}, true, 'COMMERCIAL_REGISTER', {aliases_sql}, {notes},
+    {translit}, {seat_settlement}, {seat_area}, {seat_street}, {seat_street_num},
+    {seat_post_code}, {primary_nkid}, {trade_outlets_sql}, {managers_sql}
 )
 ON CONFLICT (country_code, eik) DO UPDATE SET
     vat_number = EXCLUDED.vat_number,
@@ -1043,6 +1059,15 @@ ON CONFLICT (country_code, eik) DO UPDATE SET
     vat_legal_basis = EXCLUDED.vat_legal_basis,
     ocr_aliases = EXCLUDED.ocr_aliases,
     notes = EXCLUDED.notes,
+    transliteration = COALESCE(EXCLUDED.transliteration, public.contractors.transliteration),
+    seat_settlement = COALESCE(EXCLUDED.seat_settlement, public.contractors.seat_settlement),
+    seat_area = COALESCE(EXCLUDED.seat_area, public.contractors.seat_area),
+    seat_street = COALESCE(EXCLUDED.seat_street, public.contractors.seat_street),
+    seat_street_number = COALESCE(EXCLUDED.seat_street_number, public.contractors.seat_street_number),
+    seat_post_code = COALESCE(EXCLUDED.seat_post_code, public.contractors.seat_post_code),
+    primary_nkid_code = COALESCE(EXCLUDED.primary_nkid_code, public.contractors.primary_nkid_code),
+    trade_outlets = CASE WHEN EXCLUDED.trade_outlets != '[]'::jsonb THEN EXCLUDED.trade_outlets ELSE public.contractors.trade_outlets END,
+    managers = CASE WHEN EXCLUDED.managers != '[]'::jsonb THEN EXCLUDED.managers ELSE public.contractors.managers END,
     updated_at = now();
 """
         lines.append(sql.strip())

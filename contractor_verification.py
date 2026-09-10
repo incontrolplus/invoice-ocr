@@ -90,7 +90,12 @@ class ContractorVerificationResult:
     vat_registration_date: str | None = None   # YYYY-MM-DD
     vat_deregistration_date: str | None = None # YYYY-MM-DD
     vat_legal_basis: str | None = None         # e.g. "чл. 96 ЗДДС", "чл. 100 ЗДДС"
-    address: str | None = None
+    address: str | None = None                 # Primary statutory registered address (Седалище и адрес на управление)
+    seat_address: str | None = None            # Decomposed / verified Commercial Register seat
+    mol_name: str | None = None                # Person accountable (МОЛ / Управител)
+    trade_outlets: list[dict[str, Any]] = field(default_factory=list) # Trade outlets / stores under Наредба Н-18
+    managers: list[dict[str, Any]] = field(default_factory=list)      # Company managers from Commercial Register
+    nkids: list[dict[str, Any]] = field(default_factory=list)         # NKID economic activities
     source: str = "ONLINE"                     # "BRRA", "NRA", "VIES", "CACHE", "MOCK"
     verified_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -130,12 +135,18 @@ class ContractorVerificationResult:
             vat_deregistration_date=self.vat_deregistration_date,
             vat_legal_basis=self.vat_legal_basis,
             address=self.address,
+            seat_address=self.seat_address,
+            mol_name=self.mol_name,
+            trade_outlets=list(self.trade_outlets),
+            managers=list(self.managers),
+            nkids=list(self.nkids),
             source=self.source,
             verified_at=self.verified_at,
             is_valid_for_tax_credit=base_valid,
             issues=clean_issues,
             raw_data=dict(self.raw_data),
         )
+
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +212,11 @@ class ContractorCache:
                     vat_deregistration_date=data.get("vat_deregistration_date"),
                     vat_legal_basis=data.get("vat_legal_basis"),
                     address=data.get("address"),
+                    seat_address=data.get("seat_address"),
+                    mol_name=data.get("mol_name"),
+                    trade_outlets=data.get("trade_outlets", []),
+                    managers=data.get("managers", []),
+                    nkids=data.get("nkids", []),
                     source=f"CACHE({data.get('source', 'ONLINE')})",
                     verified_at=data.get("verified_at", datetime.now(timezone.utc).isoformat()),
                     is_valid_for_tax_credit=data.get("is_valid_for_tax_credit", True),
@@ -493,6 +509,16 @@ KNOWN_CONTRACTORS_MOCK_REGISTRY: dict[str, dict[str, Any]] = {
         "vat_deregistration_date": None,
         "vat_legal_basis": "чл. 100, ал. 1 ЗДДС",
         "address": "гр. София 1373, р-н Красна поляна, ул. Суходолска 201",
+        "seat_address": "гр. София 1373, р-н Красна поляна, ул. Суходолска 201",
+        "mol_name": "Георги Ангелов Георгиев",
+        "trade_outlets": [
+            {
+                "name": "Магазин Nargile.bg",
+                "address": "гр. София, бул. Патриарх Евтимий 77",
+                "type": "МАГАЗИН",
+                "brand": "Nargile.bg",
+            }
+        ],
     },
     "BG:131433901": {
         "company_name": "АБСОЛЮТ ПЛЮС ООД",
@@ -1104,6 +1130,11 @@ class ContractorVerifier:
                 vat_deregistration_date=mock_data.get("vat_deregistration_date"),
                 vat_legal_basis=mock_data.get("vat_legal_basis"),
                 address=mock_data.get("address"),
+                seat_address=mock_data.get("seat_address") or mock_data.get("address"),
+                mol_name=mock_data.get("mol_name"),
+                trade_outlets=mock_data.get("trade_outlets", []),
+                managers=mock_data.get("managers", []),
+                nkids=mock_data.get("nkids", []),
                 source="MOCK_REGISTRY",
                 is_valid_for_tax_credit=is_valid_credit,
                 issues=issues,
@@ -1163,6 +1194,11 @@ class ContractorVerifier:
                     vat_deregistration_date=reg_entry.get("vat_deregistration_date"),
                     vat_legal_basis=reg_entry.get("vat_legal_basis"),
                     address=reg_entry.get("address"),
+                    seat_address=reg_entry.get("seat_address") or reg_entry.get("address"),
+                    mol_name=reg_entry.get("mol_name"),
+                    trade_outlets=reg_entry.get("trade_outlets", []),
+                    managers=reg_entry.get("managers", []),
+                    nkids=reg_entry.get("nkids", []),
                     source="LOCAL_VAT_REGISTRY",
                     is_valid_for_tax_credit=is_valid_credit,
                     issues=issues,
@@ -1293,6 +1329,18 @@ class ContractorVerifier:
                             is_valid_credit = False
                             issues.append("Фирмата НЕ Е регистрирана по ЗДДС.")
 
+                        # Canonical registered office from decomposed seat or address
+                        seat_addr = row.get("address")
+                        if not seat_addr and row.get("seat_settlement") and row.get("seat_street"):
+                            parts = [row.get("seat_settlement")]
+                            if row.get("seat_area"):
+                                parts.append(row.get("seat_area"))
+                            street_part = row.get("seat_street")
+                            if row.get("seat_street_number"):
+                                street_part += f" {row.get('seat_street_number')}"
+                            parts.append(street_part)
+                            seat_addr = ", ".join(parts)
+
                         return ContractorVerificationResult(
                             country_code=row.get("country_code", country),
                             identifier=row.get("eik", ident),
@@ -1303,6 +1351,11 @@ class ContractorVerifier:
                             vat_deregistration_date=str(row.get("vat_deregistration_date")) if row.get("vat_deregistration_date") else None,
                             vat_legal_basis=row.get("vat_legal_basis"),
                             address=row.get("address"),
+                            seat_address=seat_addr or row.get("address"),
+                            mol_name=row.get("mol_name"),
+                            trade_outlets=row.get("trade_outlets") or [],
+                            managers=row.get("managers") or [],
+                            nkids=row.get("nkids") or [],
                             source="SUPABASE_CONTRACTORS",
                             is_valid_for_tax_credit=is_valid_credit,
                             issues=issues,
