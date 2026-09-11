@@ -243,11 +243,18 @@ class AccountingEngine:
         "130948956": {"account": ACCT_OTHER_EXPENSES, "reason": "осветление", "name": "ЕГЛО БЪЛГАРИЯ ЕООД"},
         "130858590": {"account": ACCT_OTHER_EXPENSES, "reason": "техника", "name": "ТЕХНОПОЛИС БЪЛГАРИЯ ЕАД"},
 
-        # Fuels -> 601
+        # Fuels & Materials -> 601
         "130962406": {"account": ACCT_MATERIALS, "reason": "горива", "name": "РОМПЕТРОЛ БЪЛГАРИЯ ЕАД"},
         "121687551": {"account": ACCT_MATERIALS, "reason": "горива", "name": "ЛУКОЙЛ БЪЛГАРИЯ ЕООД"},
         "121528328": {"account": ACCT_MATERIALS, "reason": "горива", "name": "ОМВ БЪЛГАРИЯ ООД"},
         "121852504": {"account": ACCT_MATERIALS, "reason": "горива", "name": "ШЕЛ БЪЛГАРИЯ ЕАД"},
+
+        # Construction & Building Materials -> 601 (from bilding 11.MDB, bil 26.MDB, BILD10.MDB)
+        "114631464": {"account": ACCT_MATERIALS, "reason": "м-ли", "name": "МАГНЕЗИЯ ЕООД"},
+        "114049058": {"account": ACCT_MATERIALS, "reason": "м-ли", "name": "НОВОКОМ АД"},
+        "115853140": {"account": ACCT_MATERIALS, "reason": "м-ли", "name": "СТЕНОР ООД"},
+        "114654580": {"account": ACCT_MATERIALS, "reason": "м-ли", "name": "СИМЕКС ООД"},
+        "114672009": {"account": ACCT_MATERIALS, "reason": "м-ли и транспорт", "name": "АЛФА МИКС ООД"},
     }
 
     def __init__(self, mapping_engine: AccountMappingEngine | None = None) -> None:
