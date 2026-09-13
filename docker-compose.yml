@@ -20,6 +20,9 @@ services:
       - OBSIDIAN_VAULT_DIR=/app/obsidian_vault
     volumes:
       - api_data:/data
+      - ./api_server.py:/app/api_server.py
+      - ./static:/app/static
+      - ./invoice_core:/app/invoice_core
       - ./Building_11:/app/Building_11
       - ./comparison_export:/app/comparison_export
       - ./config:/app/config
