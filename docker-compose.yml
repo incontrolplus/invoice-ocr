@@ -27,6 +27,7 @@ services:
       - ./comparison_export:/app/comparison_export
       - ./config:/app/config
       - /Users/diokarabaz/Documents/Obsidian Vault/Microinvest-Accounting:/app/obsidian_vault
+      - /Volumes:/Volumes
     depends_on:
       db:
         condition: service_healthy
