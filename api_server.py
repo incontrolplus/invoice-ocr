@@ -5004,7 +5004,13 @@ async def download_batch_package(batch_id: str):
 )
 async def sync_to_drop_folder(req: DropSyncRequest):
     target_p = Path(req.target_dir)
-    target_p.mkdir(parents=True, exist_ok=True)
+    try:
+        target_p.mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError) as ex:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot create or access target folder '{req.target_dir}': {ex}. Please verify permissions or mount path."
+        )
 
     src_log = None
     src_ldb = None
@@ -5028,13 +5034,19 @@ async def sync_to_drop_folder(req: DropSyncRequest):
 
     dest_log = target_p / "TRANSFER.LOG"
     dest_ldb = target_p / "TRANSFER.ldb"
-    dest_log.write_bytes(src_log.read_bytes())
 
-    if src_ldb and src_ldb.exists():
-        dest_ldb.write_bytes(src_ldb.read_bytes())
-    else:
-        from invoice_core.delta_pro_generator import DELTA_PRO_LDB_TEMPLATE
-        dest_ldb.write_bytes(DELTA_PRO_LDB_TEMPLATE)
+    try:
+        dest_log.write_bytes(src_log.read_bytes())
+        if src_ldb and src_ldb.exists():
+            dest_ldb.write_bytes(src_ldb.read_bytes())
+        else:
+            from invoice_core.delta_pro_generator import DELTA_PRO_LDB_TEMPLATE
+            dest_ldb.write_bytes(DELTA_PRO_LDB_TEMPLATE)
+    except (PermissionError, OSError) as ex:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed writing TRANSFER files into '{req.target_dir}': {ex}"
+        )
 
     return {
         "ok": True,
