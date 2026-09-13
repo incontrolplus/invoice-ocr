@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 from enum import Enum
 
 BG_TZ = ZoneInfo("Europe/Sofia")
+import io
 import json
 import logging
 import os
@@ -34,6 +35,7 @@ import threading
 import time
 from typing import Any, Optional
 import uuid
+import zipfile
 
 from fastapi import (
     BackgroundTasks,
@@ -4709,11 +4711,388 @@ async def download_delta_pro_package(document_id: str, db: Session = Depends(get
     )
 
 
+# ---------------------------------------------------------------------------
+# Batch Consolidated Delta Pro Export & Sync Models & Endpoints
+# ---------------------------------------------------------------------------
+
+class BatchTransferLogRequest(BaseModel):
+    document_ids: Optional[list[str]] = Field(default=None, description="Optional list of document IDs to consolidate")
+    client_eik: Optional[str] = Field(default="206062202", description="Client company EIK (default Building 11)")
+    client_company_name: Optional[str] = Field(default="БИЛДИНГ 11 ООД", description="Client company legal name")
+    period: Optional[str] = Field(default=None, description="Optional accounting period (e.g. 2026-08)")
+    target_drop_dir: Optional[str] = Field(default=None, description="Optional directory to automatically sync TRANSFER.LOG/ldb")
+    sync_to_obsidian: bool = Field(default=True, description="Automatically generate/update Obsidian dossier")
+    response_format: str = Field(default="json", description="Response format: 'json', 'log', or 'zip'")
+
+
+class DropSyncRequest(BaseModel):
+    target_dir: str = Field(..., description="Target directory path to drop TRANSFER.LOG and TRANSFER.ldb")
+    batch_id: Optional[str] = Field(default=None, description="Batch ID to sync")
+    document_id: Optional[str] = Field(default=None, description="Single document ID to sync")
+
+
+class ObsidianSyncRequest(BaseModel):
+    client_eik: str = Field(default="206062202", description="Client company EIK")
+    client_company_name: str = Field(default="БИЛДИНГ 11 ООД", description="Client company name")
+    period: str = Field(default="2026-08", description="Period label (YYYY-MM)")
+    document_ids: Optional[list[str]] = Field(default=None, description="Optional document IDs to include")
+
+
+@app.post(
+    "/api/v1/accounting/batch-transfer-log",
+    summary="Generate Consolidated Microinvest Delta Pro TRANSFER.LOG for Multiple Invoices",
+    tags=["Accounting & Delta Pro"],
+)
+async def generate_batch_transfer_log(
+    req: BatchTransferLogRequest,
+    db: Session = Depends(get_db),
+):
+    """Generate consolidated Jet 2.0 binary TRANSFER.LOG & TRANSFER.ldb for multiple invoices."""
+    import uuid
+    from decimal import Decimal
+    from invoice_core.delta_pro_generator import generate_multi_delta_pro_transfer_log, DELTA_PRO_LDB_TEMPLATE
+
+    docs_payload = []
+    # 1. Fetch requested or candidate documents
+    if req.document_ids:
+        records = db.query(DocumentRecord).filter(DocumentRecord.id.in_(req.document_ids)).all()
+    else:
+        records = db.query(DocumentRecord).filter(DocumentRecord.is_valid.is_(True)).limit(150).all()
+
+    for rec in records:
+        info = json.loads(rec.ocr_result_json) if rec.ocr_result_json else rec.to_dict()
+        op = info.get("accounting_operation") or {}
+        p = info.get("parties") or {}
+        f = info.get("financials") or {}
+        m = info.get("document_metadata") or {}
+
+        inv_num = getattr(rec, "invoice_number", None) or m.get("invoice_number") or op.get("document_number") or "0000000000"
+        doc_date = getattr(rec, "date_issued", None) or getattr(rec, "issue_date", None) or m.get("date_issued") or op.get("document_date") or ""
+        is_cn = bool(getattr(rec, "is_credit_note", False) or m.get("is_credit_note") or op.get("is_credit_note"))
+
+        supp_name = rec.supplier_name or p.get("counterpart_name") or op.get("contractor_name") or "МАГНЕЗИЯ ЕООД"
+        supp_eik = rec.supplier_eik or p.get("counterpart_eik") or op.get("contractor_eik") or "114631464"
+        supp_vat = f"BG{supp_eik}" if supp_eik else None
+
+        base = float(rec.tax_base or f.get("tax_base") or op.get("tax_base") or 0.0)
+        vat = float(rec.vat_amount or f.get("vat_amount") or op.get("vat_amount") or 0.0)
+        total = float(rec.total_amount or f.get("total_amount") or op.get("total_amount") or 0.0)
+        curr = rec.currency or f.get("currency") or op.get("currency") or "EUR"
+
+        exp_acc = str(op.get("expense_account") or "601")
+        vat_acc = str(op.get("vat_account") or "4531")
+        cred_acc = str(op.get("counterpart_account") or "401")
+        reason = str(op.get("reason") or "м-ли")
+
+        docs_payload.append({
+            "document_metadata": {
+                "invoice_number": inv_num,
+                "date_issued": doc_date,
+                "is_credit_note": is_cn,
+            },
+            "parties": {
+                "direction": "PURCHASE",
+                "counterpart_name": supp_name,
+                "counterpart_eik": supp_eik,
+                "counterpart_vat": supp_vat,
+            },
+            "financials": {
+                "tax_base": base,
+                "vat_amount": vat,
+                "total_amount": total,
+                "currency": curr,
+            },
+            "accounting_operation": {
+                "expense_account": exp_acc,
+                "vat_account": vat_acc,
+                "counterpart_account": cred_acc,
+                "reason": reason,
+            },
+        })
+
+    # If no DB records were found, fallback to cached Building 11 analysis if present
+    if not docs_payload:
+        cache_path = Path("scratch_kingston_analysis.json")
+        if cache_path.exists():
+            try:
+                cached_docs = json.loads(cache_path.read_text("utf-8"))
+                for c in cached_docs:
+                    if c.get("document_metadata") and c.get("financials"):
+                        docs_payload.append(c)
+            except Exception as ce:
+                logger.warning("Error reading scratch analysis fallback: %s", ce)
+
+    if not docs_payload:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No valid invoice documents found to build batch TRANSFER.LOG",
+        )
+
+    # 2. Generate multi-document binary TRANSFER.LOG
+    log_bytes, ldb_bytes = generate_multi_delta_pro_transfer_log(
+        documents=docs_payload,
+        client_company_name=req.client_company_name,
+    )
+
+    batch_id = uuid.uuid4().hex[:12]
+    batch_dir = Path(f".stored_documents/accounting/batches/{batch_id}")
+    batch_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = batch_dir / "TRANSFER.LOG"
+    ldb_path = batch_dir / "TRANSFER.ldb"
+    summary_path = batch_dir / "batch_summary.json"
+
+    log_path.write_bytes(log_bytes)
+    ldb_path.write_bytes(ldb_bytes)
+
+    tot_base = sum(d["financials"]["tax_base"] for d in docs_payload)
+    tot_vat = sum(d["financials"]["vat_amount"] for d in docs_payload)
+    tot_gross = sum(d["financials"]["total_amount"] for d in docs_payload)
+
+    summary_data = {
+        "batch_id": batch_id,
+        "client_company": req.client_company_name,
+        "client_eik": req.client_eik,
+        "total_documents": len(docs_payload),
+        "total_tax_base": round(tot_base, 2),
+        "total_vat": round(tot_vat, 2),
+        "total_gross": round(tot_gross, 2),
+        "currency": docs_payload[0]["financials"].get("currency", "EUR") if docs_payload else "EUR",
+        "generated_at": datetime.now().isoformat(),
+        "transfer_log_size": len(log_bytes),
+        "transfer_ldb_size": len(ldb_bytes),
+        "invoices": [d["document_metadata"]["invoice_number"] for d in docs_payload],
+    }
+    summary_path.write_text(json.dumps(summary_data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # 3. Auto-drop to designated folders
+    drop_candidates = []
+    if req.target_drop_dir:
+        drop_candidates.append(Path(req.target_drop_dir))
+    env_drop = os.environ.get("MICROINVEST_IMPORT_DIR")
+    if env_drop:
+        drop_candidates.append(Path(env_drop))
+    # Check NO NAME usb flash drive if present
+    usb_drop = Path("/Volumes/NO NAME/Building_11")
+    if usb_drop.parent.exists():
+        drop_candidates.append(usb_drop)
+    # Check local project Building_11 folder
+    local_drop = Path("Building_11")
+    drop_candidates.append(local_drop)
+
+    synced_locations = []
+    for dpath in drop_candidates:
+        try:
+            dpath.mkdir(parents=True, exist_ok=True)
+            (dpath / "TRANSFER.LOG").write_bytes(log_bytes)
+            (dpath / "TRANSFER.ldb").write_bytes(ldb_bytes)
+            synced_locations.append(str(dpath.resolve()))
+        except Exception as se:
+            logger.debug("Could not sync batch to %s: %s", dpath, se)
+
+    # 4. Optional Obsidian dossier generation
+    obsidian_file = None
+    if req.sync_to_obsidian:
+        try:
+            from invoice_core.obsidian_sync import generate_obsidian_client_dossier
+            period_label = req.period or datetime.now().strftime("%Y-%m")
+            obs_path = generate_obsidian_client_dossier(
+                client_eik=req.client_eik,
+                client_name=req.client_company_name,
+                invoices=docs_payload,
+                period=period_label,
+            )
+            obsidian_file = str(obs_path)
+        except Exception as oe:
+            logger.warning("Obsidian auto-sync warning: %s", oe)
+
+    # 5. Format responses
+    if req.response_format == "log":
+        return FileResponse(path=log_path, filename="TRANSFER.LOG", media_type="application/octet-stream")
+    elif req.response_format == "zip":
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("TRANSFER.LOG", log_bytes)
+            zf.writestr("TRANSFER.ldb", ldb_bytes)
+            zf.writestr("batch_summary.json", summary_path.read_bytes())
+        zip_buf.seek(0)
+        return Response(
+            content=zip_buf.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="Delta_Pro_Batch_{batch_id}.zip"'},
+        )
+
+    return {
+        "ok": True,
+        "batch_id": batch_id,
+        "client_company": req.client_company_name,
+        "client_eik": req.client_eik,
+        "total_documents": len(docs_payload),
+        "total_tax_base": round(tot_base, 2),
+        "total_vat": round(tot_vat, 2),
+        "total_gross": round(tot_gross, 2),
+        "download_log_url": f"/api/v1/accounting/batches/{batch_id}/transfer-log",
+        "download_ldb_url": f"/api/v1/accounting/batches/{batch_id}/transfer-ldb",
+        "download_zip_url": f"/api/v1/accounting/batches/{batch_id}/package",
+        "synced_drop_locations": synced_locations,
+        "obsidian_dossier_path": obsidian_file,
+    }
+
+
+@app.get(
+    "/api/v1/accounting/batches/{batch_id}/transfer-log",
+    summary="Download Batch Microinvest Delta Pro TRANSFER.LOG file",
+    tags=["Accounting & Delta Pro"],
+)
+async def download_batch_transfer_log(batch_id: str):
+    p = Path(f".stored_documents/accounting/batches/{batch_id}/TRANSFER.LOG")
+    if not p.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Batch TRANSFER.LOG not found")
+    return FileResponse(path=p, filename="TRANSFER.LOG", media_type="application/octet-stream")
+
+
+@app.get(
+    "/api/v1/accounting/batches/{batch_id}/transfer-ldb",
+    summary="Download Batch Microinvest Delta Pro TRANSFER.ldb file",
+    tags=["Accounting & Delta Pro"],
+)
+async def download_batch_transfer_ldb(batch_id: str):
+    p = Path(f".stored_documents/accounting/batches/{batch_id}/TRANSFER.ldb")
+    if not p.exists():
+        from invoice_core.delta_pro_generator import DELTA_PRO_LDB_TEMPLATE
+        return Response(content=DELTA_PRO_LDB_TEMPLATE, media_type="application/octet-stream", headers={"Content-Disposition": 'attachment; filename="TRANSFER.ldb"'})
+    return FileResponse(path=p, filename="TRANSFER.ldb", media_type="application/octet-stream")
+
+
+@app.get(
+    "/api/v1/accounting/batches/{batch_id}/package",
+    summary="Download Batch Delta Pro ZIP Package",
+    tags=["Accounting & Delta Pro"],
+)
+async def download_batch_package(batch_id: str):
+    batch_dir = Path(f".stored_documents/accounting/batches/{batch_id}")
+    log_p = batch_dir / "TRANSFER.LOG"
+    ldb_p = batch_dir / "TRANSFER.ldb"
+    sum_p = batch_dir / "batch_summary.json"
+
+    if not log_p.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Batch package not found")
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("TRANSFER.LOG", log_p.read_bytes())
+        if ldb_p.exists():
+            zf.writestr("TRANSFER.ldb", ldb_p.read_bytes())
+        else:
+            from invoice_core.delta_pro_generator import DELTA_PRO_LDB_TEMPLATE
+            zf.writestr("TRANSFER.ldb", DELTA_PRO_LDB_TEMPLATE)
+        if sum_p.exists():
+            zf.writestr("batch_summary.json", sum_p.read_bytes())
+
+    zip_buf.seek(0)
+    return Response(
+        content=zip_buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="Delta_Pro_Batch_{batch_id}.zip"'},
+    )
+
+
+@app.post(
+    "/api/v1/accounting/sync-to-drop-folder",
+    summary="Sync TRANSFER.LOG and TRANSFER.ldb to designated import folder / USB",
+    tags=["Accounting & Delta Pro"],
+)
+async def sync_to_drop_folder(req: DropSyncRequest):
+    target_p = Path(req.target_dir)
+    target_p.mkdir(parents=True, exist_ok=True)
+
+    src_log = None
+    src_ldb = None
+
+    if req.batch_id:
+        src_log = Path(f".stored_documents/accounting/batches/{req.batch_id}/TRANSFER.LOG")
+        src_ldb = Path(f".stored_documents/accounting/batches/{req.batch_id}/TRANSFER.ldb")
+    elif req.document_id:
+        src_log = Path(f".stored_documents/accounting/{req.document_id}/TRANSFER.LOG")
+        src_ldb = Path(f".stored_documents/accounting/{req.document_id}/TRANSFER.ldb")
+    else:
+        # Check canonical Building 11 or comparison_export
+        for c in [Path("Building_11/TRANSFER.LOG"), Path("comparison_export/TRANSFER.LOG")]:
+            if c.exists():
+                src_log = c
+                src_ldb = c.parent / "TRANSFER.ldb"
+                break
+
+    if not src_log or not src_log.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source TRANSFER.LOG file not found")
+
+    dest_log = target_p / "TRANSFER.LOG"
+    dest_ldb = target_p / "TRANSFER.ldb"
+    dest_log.write_bytes(src_log.read_bytes())
+
+    if src_ldb and src_ldb.exists():
+        dest_ldb.write_bytes(src_ldb.read_bytes())
+    else:
+        from invoice_core.delta_pro_generator import DELTA_PRO_LDB_TEMPLATE
+        dest_ldb.write_bytes(DELTA_PRO_LDB_TEMPLATE)
+
+    return {
+        "ok": True,
+        "target_dir": str(target_p.resolve()),
+        "synced_files": ["TRANSFER.LOG", "TRANSFER.ldb"],
+        "transfer_log_size": dest_log.stat().st_size,
+        "transfer_ldb_size": dest_ldb.stat().st_size,
+    }
+
+
+@app.post(
+    "/api/v1/accounting/obsidian-sync",
+    summary="Generate or Update Obsidian Accounting Dossier",
+    tags=["Accounting & Delta Pro"],
+)
+async def sync_obsidian_dossier(req: ObsidianSyncRequest, db: Session = Depends(get_db)):
+    from invoice_core.obsidian_sync import generate_obsidian_client_dossier
+
+    docs_payload = []
+    if req.document_ids:
+        records = db.query(DocumentRecord).filter(DocumentRecord.id.in_(req.document_ids)).all()
+    else:
+        records = db.query(DocumentRecord).filter(DocumentRecord.is_valid.is_(True)).limit(150).all()
+
+    for rec in records:
+        info = json.loads(rec.ocr_result_json) if rec.ocr_result_json else rec.to_dict()
+        docs_payload.append(info)
+
+    if not docs_payload:
+        cache_path = Path("scratch_kingston_analysis.json")
+        if cache_path.exists():
+            docs_payload = json.loads(cache_path.read_text("utf-8"))
+
+    if not docs_payload:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No documents available to generate Obsidian note")
+
+    out_file = generate_obsidian_client_dossier(
+        client_eik=req.client_eik,
+        client_name=req.client_company_name,
+        invoices=docs_payload,
+        period=req.period,
+    )
+
+    return {
+        "ok": True,
+        "obsidian_file": str(out_file),
+        "size_bytes": out_file.stat().st_size,
+        "client_company": req.client_company_name,
+        "period": req.period,
+    }
+
+
 @app.get(
     "/api/v1/accounting/operation/{document_id}",
     summary="Get Statutory Accounting Operation & Historical Comparison Details",
     tags=["Accounting & Delta Pro"],
 )
+
 async def get_accounting_operation_details(document_id: str, db: Session = Depends(get_db)):
     record = db.query(DocumentRecord).filter(DocumentRecord.id == document_id).first()
     acc_json_path = Path(f".stored_documents/accounting/{document_id}/accounting_operation.json")

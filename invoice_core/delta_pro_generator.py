@@ -53,6 +53,8 @@ DEFAULT_LDB_BYTES = (
     b"ADMINISTRATOR   " + b" " * 16 +
     b"\x00" * 32
 )
+DELTA_PRO_LDB_TEMPLATE = DEFAULT_LDB_BYTES
+
 
 
 def to_ole_date(dt_str: str) -> float:

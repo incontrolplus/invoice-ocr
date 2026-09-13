@@ -775,6 +775,7 @@
       <select id="doc-selector" class="btn btn-secondary" style="min-width: 230px;" onchange="loadSelectedDocument(this.value)">
         <option value="">Зареждане на документи...</option>
       </select>
+      <button class="btn btn-primary" onclick="openBatchModal()">📦 Партиди & Делта Pro</button>
       <button class="btn btn-secondary" onclick="openUploadModal()">📤 Качи фактура</button>
       <button class="btn btn-secondary" onclick="openSettingsModal()">⚙️ Webhook настройки</button>
     </div>
@@ -1104,9 +1105,77 @@
         </div>
       </div>
     </div>
+  <!-- Batch & Delta Pro Modal -->
+  <div class="modal-backdrop" id="batch-modal">
+    <div class="modal" style="max-width: 960px; width: 95%;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem;">
+        <h3 style="display: flex; align-items: center; gap: 0.5rem;">
+          <span>📦</span> Счетоводни партиди — Експорт към Microinvest Делта Pro
+        </h3>
+        <button class="btn btn-secondary btn-sm" onclick="closeBatchModal()">✕ Затвори</button>
+      </div>
+
+      <div style="display: flex; gap: 0.75rem; align-items: center; margin-bottom: 0.85rem; background: #f8fafc; padding: 0.6rem 0.85rem; border-radius: 0.375rem; border: 1px solid var(--border-subtle); flex-wrap: wrap;">
+        <div>
+          <label style="font-size: 0.75rem; font-weight: 600; display: block; color: var(--text-muted);">Фирма клиент:</label>
+          <select id="batch-client-select" class="btn btn-secondary btn-sm" style="font-size: 0.8rem;" onchange="filterBatchTableByClient(this.value)">
+            <option value="206062202">БИЛДИНГ 11 ООД (206062202)</option>
+            <option value="114077876">СТОРГОЗИЯ АД (114077876)</option>
+            <option value="200620626">МЕСОМАНИЯ 1 ЕООД (200620626)</option>
+            <option value="all">Всички фирми</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size: 0.75rem; font-weight: 600; display: block; color: var(--text-muted);">Период:</label>
+          <input type="text" id="batch-period-input" value="2026-08" style="padding: 0.25rem 0.5rem; font-size: 0.8rem; border: 1px solid var(--border); border-radius: 0.25rem; width: 95px;">
+        </div>
+        <div style="margin-left: auto; display: flex; gap: 0.4rem; align-items: flex-end;">
+          <button class="btn btn-success btn-sm" onclick="downloadBatchTransferLog('log')">📥 Свали общ TRANSFER.LOG</button>
+          <button class="btn btn-secondary btn-sm" onclick="downloadBatchTransferLog('zip')">📦 Свали пълен ZIP пакет</button>
+          <button class="btn btn-secondary btn-sm" onclick="syncBatchToObsidian()">📓 Obsidian Досие</button>
+        </div>
+      </div>
+
+      <div style="max-height: 400px; overflow-y: auto; border: 1px solid var(--border); border-radius: 0.375rem; margin-bottom: 0.85rem;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.78rem; text-align: left;">
+          <thead style="position: sticky; top: 0; background: #f1f5f9; border-bottom: 1px solid var(--border); z-index: 10;">
+            <tr>
+              <th style="padding: 0.4rem 0.5rem; width: 30px;"><input type="checkbox" id="batch-select-all" checked onchange="toggleSelectAllBatch(this.checked)"></th>
+              <th style="padding: 0.4rem 0.5rem;">Статус</th>
+              <th style="padding: 0.4rem 0.5rem;">Фактура №</th>
+              <th style="padding: 0.4rem 0.5rem;">Дата</th>
+              <th style="padding: 0.4rem 0.5rem;">Доставчик</th>
+              <th style="padding: 0.4rem 0.5rem;">ЕИК</th>
+              <th style="padding: 0.4rem 0.5rem;">Сметки</th>
+              <th style="padding: 0.4rem 0.5rem;">Основание</th>
+              <th style="padding: 0.4rem 0.5rem; text-align: right;">Основа</th>
+              <th style="padding: 0.4rem 0.5rem; text-align: right;">ДДС</th>
+              <th style="padding: 0.4rem 0.5rem; text-align: right;">Общо</th>
+            </tr>
+          </thead>
+          <tbody id="batch-table-body">
+            <tr><td colspan="11" style="padding: 1.5rem; text-align: center; color: var(--text-muted);">Зареждане на списък с фактури...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; background: #eff6ff; padding: 0.5rem 0.75rem; border-radius: 0.375rem; border: 1px solid #bfdbfe;">
+        <div>
+          <span>Избрани: <strong id="batch-selected-count">0</strong></span>
+          <span style="margin-left: 1rem;">Данъчна основа: <strong id="batch-total-base">€0.00</strong></span>
+          <span style="margin-left: 1rem;">ДДС: <strong id="batch-total-vat">€0.00</strong></span>
+          <span style="margin-left: 1rem;">Общо: <strong id="batch-total-gross">€0.00</strong></span>
+        </div>
+        <div style="display: flex; gap: 0.4rem; align-items: center;">
+          <span id="batch-status-msg" style="color: var(--success); font-weight: 600;"></span>
+          <button class="btn btn-primary btn-sm" onclick="syncBatchToDropFolder()">📁 Авто-синхрон към C:\TRANSFER.LOG</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Notification Toast -->
+
   <div id="toast">Действието беше изпълнено успешно!</div>
 
   <script>
@@ -2212,6 +2281,222 @@
     function closeUploadModal() { document.getElementById("upload-modal").classList.remove("active"); }
     function openSettingsModal() { document.getElementById("settings-modal").classList.add("active"); }
     function closeSettingsModal() { document.getElementById("settings-modal").classList.remove("active"); }
+
+    let batchSelectedIds = new Set();
+
+    function openBatchModal() {
+      document.getElementById("batch-modal").classList.add("active");
+      loadBatchDocuments();
+    }
+
+    function closeBatchModal() {
+      document.getElementById("batch-modal").classList.remove("active");
+    }
+
+    async function loadBatchDocuments() {
+      const tbody = document.getElementById("batch-table-body");
+      tbody.innerHTML = '<tr><td colspan="11" style="padding: 1.5rem; text-align: center; color: var(--text-muted);">Зареждане на списък с фактури...</td></tr>';
+      
+      try {
+        const resp = await fetch("/api/v1/documents?limit=200");
+        const data = await resp.json();
+        const docs = data.documents || [];
+        allDocumentsList = docs;
+        renderBatchTable(docs);
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="11" style="padding: 1.5rem; text-align: center; color: var(--danger);">Грешка при зареждане: ${err.message}</td></tr>`;
+      }
+    }
+
+    function filterBatchTableByClient(clientEik) {
+      if (clientEik === "all") {
+        renderBatchTable(allDocumentsList);
+      } else {
+        const filtered = allDocumentsList.filter(d => 
+          (d.recipient_eik && d.recipient_eik.includes(clientEik)) ||
+          (d.supplier_eik && d.supplier_eik.includes(clientEik)) ||
+          clientEik === "206062202"
+        );
+        renderBatchTable(filtered);
+      }
+    }
+
+    function renderBatchTable(docs) {
+      const tbody = document.getElementById("batch-table-body");
+      tbody.innerHTML = "";
+      batchSelectedIds.clear();
+
+      if (!docs || docs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="11" style="padding: 1.5rem; text-align: center; color: var(--text-muted);">Няма намерени фактури за тази фирма.</td></tr>';
+        updateBatchTotals([]);
+        return;
+      }
+
+      docs.forEach(d => {
+        batchSelectedIds.add(d.id);
+        const tr = document.createElement("tr");
+        tr.style.borderBottom = "1px solid var(--border-subtle)";
+        tr.style.cursor = "pointer";
+
+        const isMatched = (d.historical_match && d.historical_match.matched) || (d.supplier_eik && d.supplier_eik.length >= 9);
+        const hasError = !d.is_valid || d.error_count > 0;
+        let trafficBadge = '<span style="color: var(--success); font-weight: 700;">🟢 Готов</span>';
+        if (hasError) {
+          trafficBadge = '<span style="color: var(--danger); font-weight: 700;">🔴 Грешка</span>';
+        } else if (!isMatched) {
+          trafficBadge = '<span style="color: var(--warning); font-weight: 700;">🟡 Преглед</span>';
+        }
+
+        const base = Number(d.tax_base || (Number(d.total_amount || 0) / 1.2)).toFixed(2);
+        const vat = Number(d.vat_amount || (Number(d.total_amount || 0) - Number(base))).toFixed(2);
+        const tot = Number(d.total_amount || 0).toFixed(2);
+        const accts = d.accounting_operation ? `${d.accounting_operation.expense_account || '601'} / 4531 / 401` : '601 / 4531 / 401';
+        const reason = d.accounting_operation ? (d.accounting_operation.reason || 'м-ли') : 'м-ли';
+
+        tr.innerHTML = `
+          <td style="padding: 0.4rem 0.5rem;"><input type="checkbox" class="batch-chk" value="${d.id}" checked onchange="toggleBatchItem('${d.id}', this.checked)"></td>
+          <td style="padding: 0.4rem 0.5rem;">${trafficBadge}</td>
+          <td style="padding: 0.4rem 0.5rem; font-weight: 600;">${escapeHtml(d.invoice_number || '—')}</td>
+          <td style="padding: 0.4rem 0.5rem; color: var(--text-muted);">${escapeHtml(d.issue_date || (d.created_at ? d.created_at.split('T')[0] : '—'))}</td>
+          <td style="padding: 0.4rem 0.5rem; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(d.supplier_name || 'МАГНЕЗИЯ ЕООД')}</td>
+          <td style="padding: 0.4rem 0.5rem; font-family: monospace;">${escapeHtml(d.supplier_eik || '—')}</td>
+          <td style="padding: 0.4rem 0.5rem; font-family: monospace; font-weight: 600;">${accts}</td>
+          <td style="padding: 0.4rem 0.5rem;">${escapeHtml(reason)}</td>
+          <td style="padding: 0.4rem 0.5rem; text-align: right; font-family: monospace;">€${base}</td>
+          <td style="padding: 0.4rem 0.5rem; text-align: right; font-family: monospace;">€${vat}</td>
+          <td style="padding: 0.4rem 0.5rem; text-align: right; font-family: monospace; font-weight: 700;">€${tot}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      updateBatchTotals(docs);
+    }
+
+    function toggleSelectAllBatch(checked) {
+      document.querySelectorAll(".batch-chk").forEach(c => {
+        c.checked = checked;
+        if (checked) batchSelectedIds.add(c.value);
+        else batchSelectedIds.delete(c.value);
+      });
+      recalcBatchSelection();
+    }
+
+    function toggleBatchItem(id, checked) {
+      if (checked) batchSelectedIds.add(id);
+      else batchSelectedIds.delete(id);
+      recalcBatchSelection();
+    }
+
+    function recalcBatchSelection() {
+      const selectedDocs = allDocumentsList.filter(d => batchSelectedIds.has(d.id));
+      updateBatchTotals(selectedDocs);
+    }
+
+    function updateBatchTotals(docs) {
+      let tBase = 0, tVat = 0, tGross = 0;
+      docs.forEach(d => {
+        const base = Number(d.tax_base || (Number(d.total_amount || 0) / 1.2));
+        const vat = Number(d.vat_amount || (Number(d.total_amount || 0) - base));
+        const tot = Number(d.total_amount || 0);
+        tBase += base;
+        tVat += vat;
+        tGross += tot;
+      });
+      document.getElementById("batch-selected-count").innerText = docs.length;
+      document.getElementById("batch-total-base").innerText = "€" + tBase.toFixed(2);
+      document.getElementById("batch-total-vat").innerText = "€" + tVat.toFixed(2);
+      document.getElementById("batch-total-gross").innerText = "€" + tGross.toFixed(2);
+    }
+
+    async function downloadBatchTransferLog(format) {
+      const clientSel = document.getElementById("batch-client-select");
+      const clientEik = clientSel.value === "all" ? "206062202" : clientSel.value;
+      const clientName = clientSel.options[clientSel.selectedIndex].text.split("(")[0].trim();
+      const period = document.getElementById("batch-period-input").value.trim();
+
+      const ids = Array.from(batchSelectedIds);
+      const payload = {
+        document_ids: ids.length > 0 ? ids : null,
+        client_eik: clientEik,
+        client_company_name: clientName,
+        period: period,
+        response_format: format
+      };
+
+      try {
+        showToast("Генериране на консолидиран TRANSFER.LOG...");
+        const resp = await fetch("/api/v1/accounting/batch-transfer-log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.detail || "Грешка при генериране");
+        }
+
+        if (format === "log") {
+          const blob = await resp.blob();
+          downloadBlob(blob, "TRANSFER.LOG");
+          showToast("TRANSFER.LOG беше изтеглен успешно!");
+        } else if (format === "zip") {
+          const blob = await resp.blob();
+          downloadBlob(blob, `Delta_Pro_Batch_${clientEik}_${period}.zip`);
+          showToast("ZIP архивът беше изтеглен успешно!");
+        }
+      } catch (e) {
+        showToast("Грешка: " + e.message, true);
+      }
+    }
+
+    async function syncBatchToDropFolder() {
+      const msg = document.getElementById("batch-status-msg");
+      msg.innerText = "Синхронизиране...";
+      try {
+        const resp = await fetch("/api/v1/accounting/sync-to-drop-folder", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target_dir: "/Volumes/NO NAME/Building_11" })
+        });
+        const data = await resp.json();
+        if (data.ok) {
+          msg.innerText = "✅ Записано в: " + data.target_dir;
+          showToast("TRANSFER.LOG & ldb са синхронизирани в " + data.target_dir);
+        } else {
+          msg.innerText = "❌ Неуспешен запис";
+        }
+      } catch (e) {
+        msg.innerText = "❌ " + e.message;
+      }
+    }
+
+    async function syncBatchToObsidian() {
+      const clientSel = document.getElementById("batch-client-select");
+      const clientEik = clientSel.value === "all" ? "206062202" : clientSel.value;
+      const clientName = clientSel.options[clientSel.selectedIndex].text.split("(")[0].trim();
+      const period = document.getElementById("batch-period-input").value.trim();
+
+      try {
+        showToast("Генериране на Obsidian досие...");
+        const resp = await fetch("/api/v1/accounting/obsidian-sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            client_eik: clientEik,
+            client_company_name: clientName,
+            period: period,
+            document_ids: Array.from(batchSelectedIds)
+          })
+        });
+        const data = await resp.json();
+        if (data.ok) {
+          showToast("Obsidian досието е обновено: " + data.obsidian_file);
+        }
+      } catch (e) {
+        showToast("Грешка при Obsidian sync: " + e.message, true);
+      }
+    }
 
     async function handleFileUpload(file) {
       if (!file) return;
