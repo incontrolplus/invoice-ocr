@@ -226,6 +226,22 @@ def extract_invoice_number(
         # Fiscal cash register / serial number check
         if any(kw in lower_line for kw in ['сериен', 'cepyex']):
             return True
+        # Delivery note / goods receipt check (стокова разписка / експедиция / поръчка)
+        if re.search(r'(?i)(?:стокова\s*разписка|стокова|експедиция|поръчка|ордер|приемателно|приемо-предавателен)\b', line_text):
+            has_explicit_invoice = bool(re.search(
+                r'(?i)(?:фактур[аея]|invoice|кредитно\s+известие|дебитно\s+известие)\s*(?:[№#]|no\.?|n[o0]\.?|ne\.?|ко\.?|[нhNn][оo0][мm][еe][рp]|№)\s*[:./\-]*\s*' + re.escape(clean_digits),
+                line_text
+            ))
+            if not has_explicit_invoice:
+                return True
+        # Bank account / IBAN lines check
+        if any(kw in lower_line for kw in ['iban', 'bic', 'сметка', 'банка', 'bank', 'stsa', 'дск', 'unicredit', 'fibank']):
+            has_explicit_invoice = bool(re.search(
+                r'(?i)(?:фактур[аея]|invoice|кредитно\s+известие|дебитно\s+известие)\s*(?:[№#]|no\.?|n[o0]\.?|ne\.?|ко\.?|[нhNn][оo0][мm][еe][рp]|№)\s*[:./\-]*\s*' + re.escape(clean_digits),
+                line_text
+            ))
+            if not has_explicit_invoice:
+                return True
         # Reference invoice check: numbers belonging to original corrected invoices
         if re.search(r'(?i)(?:към\s+(?:фактура|документ)|във\s+връзка\s+с\s+(?:фактура|документ)|основание\s+фактура|по\s+фактура|референт\w*\s+фактура|коригира\s+фактура)\b', line_text):
             return True
@@ -238,12 +254,12 @@ def extract_invoice_number(
 
     candidates: list[tuple[int, str, str]] = []
 
-    # Patterns matching title + number (with support for Latin homoglyphs: H/h/N/n, O/o/0, M/m, E/e, P/p)
+    # Patterns matching title + number (with support for Latin homoglyphs: H/h/N/n, O/o/0, M/m, E/e, P/p, K/k)
     pat_factura = re.compile(
-        r'(?i)(?:фактур[аея]|фактув[аея]|факгуг[аея]|факгу[кр][аея]|maktyf[аa]|paktyf[аa]?|[od]aktyf\s*[аae]?|qak[tт][yу][pр][aа]|tye\s*a|invoice|кредитно\s+известие|дебитно\s+известие|известие|протокол)\s*(?:[№#]|no\.?|n[o0]\.?|nes|fee|hee|he[et]?|its|tits|вен|ван|в:|в\.|[нhNn][оo0][мm][еe][рp]|[нhNn][еe][нn]|[нhNn]\.?|[нhNn]:|мо\.?|хо\.?|а/о|ва)?\s*[:./\"\'“\-]*\s*([зЗ]?(?:[0-9A-Za-zА-Яа-я$¢]{9,13}|\d{3,6}\s*\d{4,7}))'
+        r'(?i)(?:фактур[аея]|фактув[аея]|факгуг[аея]|факгу[кр][аея]|maktyf[аa]|paktyf[аa]?|[od]aktyf\s*[аae]?|qak[tт][yу][pр][aа]|tye\s*a|invoice|кредитно\s+известие|дебитно\s+известие|известие|протокол)\s*(?:[№#]|no\.?|n[o0]\.?|ne\.?|n[eе]:?|[нhNn][eе]:?|[нhNn][eе]\.?|[кkКK][оo0]:?|[кkКK][оo0]\.?|[кkКK][eе]:?|[кkКK][eе]\.?|nes|fee|hee|he[et]?|its|tits|вен|ван|в:|в\.|[нhNn][оo0][мm][еe][рp]|[нhNn][еe][нn]|[нhNn]\.?|[нhNn]:|мо\.?|хо\.?|а/о|ва)?\s*[:./\"\'“\-]*\s*([зЗ]?(?:[0-9A-Za-zА-Яа-я$¢]{9,13}|\d{3,6}\s*\d{4,7}))'
     )
     pat_nomer = re.compile(
-        r'(?i)(?:[нhNn][оo0][мm][еe][рp]|[нhNn][еe][нn]|nes|мо|хо|а/о|a/o|no\.?|n[o0]\.?|№|ва)\s*[:./\"\'“\-]*\s*([зЗ]?(?:[0-9A-Za-zА-Яа-я$¢]{9,13}|\d{3,6}\s*\d{4,7}|\d{5,11}))'
+        r'(?i)(?:[нhNn][оo0][мm][еe][рp]|[нhNn][еe][нn]|[нhNn][eе]:?|[нhNn][eе]\.?|ne\.?|n[eе]:?|[кkКK][оo0]:?|[кkКK][оo0]\.?|[кkКK][eе]:?|[кkКK][eе]\.?|nes|мо|хо|а/о|a/o|no\.?|n[o0]\.?|№|ва)\s*[:./\"\'“\-]*\s*([зЗ]?(?:[0-9A-Za-zА-Яа-я$¢]{9,13}|\d{3,6}\s*\d{4,7}|\d{5,11}))'
     )
 
     page1_lines = [l for l in lines if getattr(l, 'page_number', 1) == 1]
@@ -567,7 +583,7 @@ def extract_dates(lines: list[LogicalLine]) -> ExtractedDates:
     issue_keywords = [
         "дата на издаване", "дата на фактурата", "дата на документа",
         "издадена на", "дата:", "date of issue", "invoice date", "issue date",
-        "от дата", "дата "
+        "от дата", "дата ", "от:", " от "
     ]
 
     tax_keywords = [
@@ -581,6 +597,7 @@ def extract_dates(lines: list[LogicalLine]) -> ExtractedDates:
         "l/d", "партида:", "партида|", "срок|", "кат. описание", "описание на стоката",
     ]
 
+    prev_was_reference = False
     for line in lines:
         text = line.text_lower
 
@@ -603,8 +620,15 @@ def extract_dates(lines: list[LogicalLine]) -> ExtractedDates:
             continue
 
         # 3b. Skip purchase order / reference lines ('заявка', 'поръчка', 'към ф-ра', etc.)
-        if any(kw in text for kw in ["заявка", "зайвка", "поръчка", "към ф-ра", "към ф-рата", "към фактура", "договор"]):
+        if any(kw in text for kw in ["заявка", "зайвка", "поръчка", "към ф-ра", "към ф-рата", "към фактура", "договор", "дистанционна продажба"]):
+            prev_was_reference = True
             continue
+
+        if prev_was_reference:
+            prev_was_reference = False
+            # If line is continuation of reference (e.g. number / date)
+            if re.search(r"\b\d{5,12}\s*[/]\s*\d{1,2}[./\-]", line.text) or "банка" in text:
+                continue
 
         # 4. Check if line contains a parseable date
         parsed = parse_date(line.text)
@@ -637,7 +661,10 @@ def extract_dates(lines: list[LogicalLine]) -> ExtractedDates:
         is_item_row = (
             bool(re.search(r'\b(?:\d+[,.]\d{2})\b.*\b(?:\d+[,.]\d{2})\b', line.text))
             and any(u in text for u in ["бр", "кг", "л.", "бр.", "бp", "6p", "6р"])
-        ) or any(t_col in text for t_col in ["партида", "срок", "код", "мярка", "кат."])
+        ) or (
+            any(t_col in text for t_col in ["партида", "срок", "мярка", "кат."])
+            or (re.search(r'\bкод\b', text) and not any(b in text for b in ["bic", "код по", "пощенски"]))
+        )
         if not is_item_row:
             if date_issued is None:
                 date_issued = parsed
@@ -770,7 +797,7 @@ DISQUALIFY_PATTERNS = [
     # Invoice metadata
     re.compile(r'(?i)\b(?:номер|дата|фактура|оригинал|дубликат|копие|екземпляр|стр\.?|страница|invoice|original|copy)\b'),
     # Address prefixes or lines containing street/city indicators without legal form
-    re.compile(r'(?i)\b(?:адрес|гр\.?|град|ул\.?|бул\.?|ж\.?к\.?|кв\.?|р-цен|пощенски|област|община|държава)\b'),
+    re.compile(r'(?i)\b(?:адрес|гр\.?|град|ул\.?|улица|бул\.?|булевард|ж\.?к\.?|кв\.?|квартал|р-цен|пощенски|област|община|държава)\b'),
     # Pure form field headers
     re.compile(r'(?i)\b(?:описание на сделката|място на сделката|наименование|единична цена|сума за плащане|данъчна основа|ставка на ддс|плащане в брой)\b'),
     # Pure label
@@ -909,7 +936,7 @@ def score_party_candidate(cand: str, is_near_label: bool = False, role: str = ""
     if 2 <= len(words) <= 6:
         score += 25.0
     elif len(words) == 1 and not has_legal_form:
-        score -= 40.0
+        score -= 10.0 if is_near_label else 40.0
 
     cyr_count = len(re.findall(r'[А-Яа-я]', s))
     if cyr_count >= 4:
@@ -1462,11 +1489,16 @@ def extract_party(
         header_tokens = [
             t for t in tokens
             if 0.01 * page_h <= t.top and t.bottom <= 0.08 * page_h
+            and in_col(t)
             and not _in_receipt(t)
         ]
         header_lines = fuse_visual_rows(group_tokens_into_lines(header_tokens)) if header_tokens else []
         for idx, line in enumerate(header_lines):
-            if LEGAL_FORM_PATTERN.search(line.text) or any(k in line.text.upper() for k in ["METRO", "HETPO", "НЕТРО", "ИНТЕРМЕС"]):
+            has_legal = bool(LEGAL_FORM_PATTERN.search(line.text))
+            is_prominent = len(line.text.strip()) >= 3 and not any(
+                kw in line.text.lower() for kw in ["доставчик", "получател", "фактура", "тел", "gsm", "email", "www."]
+            )
+            if has_legal or is_prominent or any(k in line.text.upper() for k in ["METRO", "HETPO", "НЕТРО", "ИНТЕРМЕС"]):
                 candidates_pool.append((line.text, False))
                 if idx + 1 < len(header_lines):
                     candidates_pool.append((f"{line.text} {header_lines[idx + 1].text}", False))

@@ -665,11 +665,54 @@ def extract_financial_summary(
                 t = cand_t
                 tb = cand_tb
 
+    # Pre-check: If tax_base > total on standard purchase, tax_base has an OCR leading artifact (e.g. €21.45 read as 621.45)
+    if t is not None and tb is not None and t > 0 and tb > t:
+        if str(tb)[0] in "68" and len(str(tb)) > 3:
+            cand_tb = Decimal(str(tb)[1:])
+            if abs(cand_tb * Decimal("1.20") - t) <= Decimal("0.05") or abs(cand_tb + (v or 0) - t) <= Decimal("0.05"):
+                logger.warning("Cross-validation: stripped OCR artifact from tax_base %s -> %s to match total %s", tb, cand_tb, t)
+                summary.tax_base.amount = cand_tb
+                tb = cand_tb
+        if tb > t:
+            # Derive plausible tax base from total
+            cand_tb = (t / Decimal("1.20")).quantize(Decimal("0.01"))
+            logger.warning("Cross-validation: derived plausible tax_base %s from total %s", cand_tb, t)
+            summary.tax_base.amount = cand_tb
+            tb = cand_tb
+
+    # Pre-check: If VAT > total on standard purchase, VAT has an OCR leading artifact (e.g. €11.71 read as 611.71)
+    if t is not None and v is not None and t > 0 and v > t:
+        if str(v)[0] in "68" and len(str(v)) > 3:
+            cand_v = Decimal(str(v)[1:])
+            if tb is not None and abs(tb + cand_v - t) <= Decimal("0.05"):
+                logger.warning("Cross-validation: stripped OCR artifact from vat_amount %s -> %s to match total %s", v, cand_v, t)
+                summary.vat_amount.amount = cand_v
+                v = cand_v
+
+    # Pre-check: Statutory VAT Rate Sanity Check (20% or 9% in Bulgaria)
+    if tb is not None and v is not None and t is not None and tb > 0 and v > 0:
+        rate = v / tb
+        if abs(rate - Decimal("0.20")) > Decimal("0.05") and abs(rate - Decimal("0.09")) > Decimal("0.05") and rate > Decimal("0.01"):
+            cand_v_list = [v]
+            if str(v)[0] in "68" and len(str(v)) > 3:
+                cand_v_list.append(Decimal(str(v)[1:]))
+            cand_t_list = [t]
+            if str(t)[0] in "68" and len(str(t)) > 3:
+                cand_t_list.append(Decimal(str(t)[1:]))
+            for ct in cand_t_list:
+                for cv in cand_v_list:
+                    if abs(tb + cv - ct) <= Decimal("0.05") and abs(cv / tb - Decimal("0.20")) <= Decimal("0.05"):
+                        logger.warning("Cross-validation: reconciled invalid VAT rate (%s) via artifact stripping: v=%s->%s, t=%s->%s", rate, v, cv, t, ct)
+                        summary.vat_amount.amount = cv
+                        summary.total_amount_due.amount = ct
+                        v, t = cv, ct
+                        break
+
     if t is not None and v is not None and tb is not None:
-        # Check if tax base and VAT were extracted in reverse order (tb < v with ~20% or ~9% ratio)
-        if tb > 0 and v > 0 and tb < v:
+        # Check if tax base and VAT were extracted in reverse order (tb < v with ~20% ratio)
+        if tb > 0 and v > 0 and tb < v and abs(tb + v - t) <= ZDDS_DISCOUNT_TOLERANCE:
             swapped_rate = tb / v
-            if abs(swapped_rate - Decimal("0.20")) < Decimal("0.02") or abs(swapped_rate - Decimal("0.09")) < Decimal("0.02"):
+            if abs(swapped_rate - Decimal("0.20")) < Decimal("0.02"):
                 logger.warning("Cross-validation: swapping inverted tax_base (%s) and vat_amount (%s)", tb, v)
                 summary.tax_base.amount, summary.vat_amount.amount = v, tb
                 tb, v = v, tb
@@ -720,7 +763,11 @@ def extract_financial_summary(
         summary.tax_base.amount = (t - v).quantize(Decimal("0.01"))
         logger.warning("Cross-validation: derived missing tax_base as %s", summary.tax_base.amount)
     elif t is not None and tb is not None and v is None:
-        summary.vat_amount.amount = (t - tb).quantize(Decimal("0.01"))
+        derived_vat = (t - tb).quantize(Decimal("0.01"))
+        if derived_vat < 0:
+            derived_vat = (tb * Decimal("0.20")).quantize(Decimal("0.01"))
+            summary.total_amount_due.amount = (tb + derived_vat).quantize(Decimal("0.01"))
+        summary.vat_amount.amount = max(Decimal("0.00"), derived_vat)
         logger.warning("Cross-validation: derived missing vat_amount as %s", summary.vat_amount.amount)
     elif tb is not None and v is not None and t is None:
         summary.total_amount_due.amount = (tb + v).quantize(Decimal("0.01"))

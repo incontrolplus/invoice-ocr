@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import hashlib
 import hmac
+
+BG_TZ = ZoneInfo("Europe/Sofia")
 import ipaddress
 import json
 import logging
@@ -132,7 +135,7 @@ def prepare_webhook_payload(
 
     payload = {
         "event": event_type,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(BG_TZ).isoformat(),
         "document_id": doc_id,
         "file_name": file_name,
         "status": status,
@@ -281,7 +284,7 @@ async def send_webhook_async(
             response_body=response_body,
             success=success,
             error_message=last_error,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(BG_TZ),
         )
         db.add(log_entry)
 

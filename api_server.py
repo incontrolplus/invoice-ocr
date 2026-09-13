@@ -19,7 +19,10 @@ from contextlib import asynccontextmanager
 import dataclasses
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from enum import Enum
+
+BG_TZ = ZoneInfo("Europe/Sofia")
 import json
 import logging
 import os
@@ -867,9 +870,13 @@ def _validate_uploaded_extension(filename: str) -> str:
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@app.get("/", summary="API Root")
-async def root():
-    """Welcome endpoint providing API overview and documentation links."""
+@app.get("/", summary="Root Web Dashboard / API Overview")
+@app.head("/", include_in_schema=False)
+async def root(request: Request):
+    """Serve Dashboard for browser requests, or API overview JSON for API clients."""
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept and "application/json" not in accept:
+        return await dashboard_view()
     return {
         "service": "Bulgarian Invoice OCR REST API",
         "version": API_VERSION,
@@ -901,6 +908,7 @@ async def root():
     summary="Health & Readiness Check",
     tags=["System"],
 )
+@app.head("/health", include_in_schema=False)
 async def health():
     """Check microservice health, uptime, and Tesseract OCR engine readiness."""
     try:
@@ -938,6 +946,101 @@ async def list_languages():
         required_ready=is_ready,
         missing_languages=missing,
     )
+
+
+# ---------------------------------------------------------------------------
+# Automated Accounting Pipeline & Microinvest Delta Pro Integration
+# ---------------------------------------------------------------------------
+
+def execute_accounting_pipeline_for_document(
+    doc_id: str,
+    invoice_dict: dict[str, Any],
+    file_name: str,
+    parties_rep: Any = None,
+) -> Optional[dict[str, Any]]:
+    """Execute automated accounting operation determination and Microinvest Delta Pro package generation.
+
+    Strictly complies with Bulgarian Accounting Standards (НСС / Закон за счетоводството, ЗДДС):
+    - Purchases: Дт 601/602/304, Дт 4531, Кт 401 (or 501 if cash)
+    - Sales: Дт 411, Кт 701/702/703, Кт 4532
+    - Credit notes: Red storno (червено сторно) with negative amounts
+    - Exact currency preservation (EUR / BGN)
+    - 100% offline-first operation matching against local MDB knowledge base
+    - Generates binary TRANSFER.LOG (65KB) & TRANSFER.ldb (64B) for Microinvest Delta Pro
+    """
+    try:
+        from invoice_core.historical_matcher import process_invoice_and_create_accounting_package
+        bundle = process_invoice_and_create_accounting_package(invoice_dict)
+        if not bundle:
+            return None
+
+        # Persist local binary files for Microinvest Delta Pro
+        log_bytes = bundle.get("transfer_log_bytes")
+        ldb_bytes = bundle.get("transfer_ldb_bytes")
+
+        if log_bytes:
+            client_co = bundle.get("accounting_operation", {}).get("client_company") or "Building_11"
+            safe_co = "Building_11" if "11" in client_co else client_co.replace(" ", "_")
+
+            # 1. Store in local repository directory under doc_id
+            acc_dir = Path(f".stored_documents/accounting/{doc_id}")
+            acc_dir.mkdir(parents=True, exist_ok=True)
+            (acc_dir / "TRANSFER.LOG").write_bytes(log_bytes)
+            if ldb_bytes:
+                (acc_dir / "TRANSFER.ldb").write_bytes(ldb_bytes)
+
+            # 2. Store in active company folder (e.g. Building_11/TRANSFER.LOG)
+            try:
+                co_dir = Path(safe_co)
+                co_dir.mkdir(parents=True, exist_ok=True)
+                (co_dir / "TRANSFER.LOG").write_bytes(log_bytes)
+                if ldb_bytes:
+                    (co_dir / "TRANSFER.ldb").write_bytes(ldb_bytes)
+            except Exception as co_err:
+                logger.warning("Could not write to company directory %s: %s", safe_co, co_err)
+
+            # 3. Store in persistent storage /data if running in container
+            data_co_dir = Path(f"/data/accounting/{safe_co}")
+            if Path("/data").exists():
+                try:
+                    data_co_dir.mkdir(parents=True, exist_ok=True)
+                    (data_co_dir / "TRANSFER.LOG").write_bytes(log_bytes)
+                    if ldb_bytes:
+                        (data_co_dir / "TRANSFER.ldb").write_bytes(ldb_bytes)
+                except Exception as data_err:
+                    logger.warning("Could not write to /data/accounting: %s", data_err)
+
+            # 4. Save accounting operation JSON
+            try:
+                (acc_dir / "accounting_operation.json").write_text(
+                    json.dumps({
+                        "file_name": file_name,
+                        "accounting_operation": bundle.get("accounting_operation"),
+                        "match_report": bundle.get("match_report"),
+                    }, default=str, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as json_err:
+                logger.warning("Could not save local accounting JSON for %s: %s", doc_id, json_err)
+
+            logger.info("Saved Microinvest Delta Pro transfer files for %s to %s and %s", doc_id, acc_dir, safe_co)
+
+            # 5. Store on USB if mounted
+            usb_co_dir = Path(f"/Volumes/NO NAME/{safe_co}")
+            if usb_co_dir.parent.exists():
+                try:
+                    usb_co_dir.mkdir(parents=True, exist_ok=True)
+                    (usb_co_dir / "TRANSFER.LOG").write_bytes(log_bytes)
+                    if ldb_bytes:
+                        (usb_co_dir / "TRANSFER.ldb").write_bytes(ldb_bytes)
+                    logger.info("Synced Microinvest Delta Pro transfer files to USB: %s", usb_co_dir)
+                except Exception as usb_err:
+                    logger.warning("Could not write to USB directory %s: %s", usb_co_dir, usb_err)
+
+        return bundle
+    except Exception as exc:
+        logger.error("Error executing accounting pipeline for %s: %s", file_name, exc, exc_info=True)
+        return None
 
 
 @app.post(
@@ -1035,6 +1138,18 @@ async def process_single_invoice(
 
         # Persist document to database & storage
         doc_id = uuid.uuid4().hex
+        if not parties_rep.has_critical_mismatch:
+            acc_bundle = execute_accounting_pipeline_for_document(
+                doc_id=doc_id,
+                invoice_dict=full_result,
+                file_name=file.filename,
+                parties_rep=parties_rep,
+            )
+            if acc_bundle:
+                full_result["accounting_bundle"] = acc_bundle
+                full_result["accounting_operation"] = acc_bundle.get("accounting_operation")
+                full_result["historical_match_report"] = acc_bundle.get("match_report")
+
         with get_db_session() as db:
             doc_rec = save_document_to_db(
                 db=db,
@@ -1050,6 +1165,12 @@ async def process_single_invoice(
                 doc_rec.is_valid = False
                 db.commit()
             saved_dict = doc_rec.to_dict(include_raw_evidence=include_raw_evidence)
+
+        if full_result.get("accounting_operation"):
+            saved_dict["accounting_operation"] = full_result["accounting_operation"]
+            saved_dict["historical_match_report"] = full_result.get("historical_match_report")
+            saved_dict["transfer_log_url"] = f"/api/v1/accounting/transfer-log/{doc_id}"
+            saved_dict["transfer_ldb_url"] = f"/api/v1/accounting/transfer-ldb/{doc_id}"
 
         # Dispatch Webhook notification asynchronously to ERP if requested
         if webhook_url:
@@ -1269,6 +1390,18 @@ async def ingest_email_webhook(
             }
 
             doc_id = uuid.uuid4().hex
+            if not parties_rep.has_critical_mismatch:
+                acc_bundle = execute_accounting_pipeline_for_document(
+                    doc_id=doc_id,
+                    invoice_dict=full_res,
+                    file_name=att.filename,
+                    parties_rep=parties_rep,
+                )
+                if acc_bundle:
+                    full_res["accounting_bundle"] = acc_bundle
+                    full_res["accounting_operation"] = acc_bundle.get("accounting_operation")
+                    full_res["historical_match_report"] = acc_bundle.get("match_report")
+
             with get_db_session() as db:
                 doc_rec = save_document_to_db(
                     db=db,
@@ -1303,6 +1436,10 @@ async def ingest_email_webhook(
                 "vat_amount": saved_dict.get("vat_amount"),
                 "total_amount": saved_dict.get("total_amount"),
                 "currency": saved_dict.get("currency"),
+                "accounting_operation": full_res.get("accounting_operation"),
+                "historical_match_report": full_res.get("historical_match_report"),
+                "transfer_log_url": f"/api/v1/accounting/transfer-log/{doc_id}" if full_res.get("accounting_operation") else None,
+                "transfer_ldb_url": f"/api/v1/accounting/transfer-ldb/{doc_id}" if full_res.get("accounting_operation") else None,
                 "status": saved_dict.get("status"),
                 "is_valid": saved_dict.get("is_valid"),
                 "requires_hitl": parties_rep.requires_hitl,
@@ -1395,8 +1532,9 @@ async def classify_document_endpoint(
         )
         proc_time = time.perf_counter() - t0
 
-        # Check if classified as Invoice and requested to auto-process
-        if classification.category == DocumentCategory.FAKTURI and auto_process_invoice and not classification.is_obscured:
+        # Check if classified as Invoice or Credit Note and requested to auto-process
+        is_acc_candidate = classification.category in (DocumentCategory.FAKTURI, DocumentCategory.KREDITNI_IZVESTIYA)
+        if is_acc_candidate and auto_process_invoice and not classification.is_obscured:
             pool = get_ocr_pool()
             ocr_res = await pool.submit_ocr_async(
                 file_path=tmp_path,
@@ -1406,6 +1544,9 @@ async def classify_document_endpoint(
             )
             if ocr_res.get("status") == "success" and ocr_res.get("invoice") is not None:
                 inv = ocr_res["invoice"]
+                if classification.category == DocumentCategory.KREDITNI_IZVESTIYA:
+                    inv.invoice_metadata.is_credit_note = True
+                    inv.invoice_metadata.document_type = "CREDIT_NOTE"
 
                 # Statutory Contractor & Partner Verification against accounting.partners
                 from invoice_core.partner_verification import verify_invoice_parties
@@ -1471,6 +1612,18 @@ async def classify_document_endpoint(
                         "invoice_data": saved_dict,
                     }
 
+                # If NOT critical mismatch: run automated accounting pipeline
+                acc_bundle = execute_accounting_pipeline_for_document(
+                    doc_id=doc_id,
+                    invoice_dict=full_res,
+                    file_name=file_name,
+                    parties_rep=parties_rep,
+                )
+                if acc_bundle:
+                    full_res["accounting_bundle"] = acc_bundle
+                    full_res["accounting_operation"] = acc_bundle.get("accounting_operation")
+                    full_res["historical_match_report"] = acc_bundle.get("match_report")
+
                 with get_db_session() as db:
                     doc_rec = save_document_to_db(
                         db=db,
@@ -1498,6 +1651,10 @@ async def classify_document_endpoint(
                     "requires_hitl": parties_rep.requires_hitl,
                     "hitl_reasons": parties_rep.hitl_reasons,
                     "parties_verification": parties_rep.to_dict(),
+                    "accounting_operation": full_res.get("accounting_operation"),
+                    "historical_match_report": full_res.get("historical_match_report"),
+                    "transfer_log_url": f"/api/v1/accounting/transfer-log/{doc_id}" if full_res.get("accounting_operation") else None,
+                    "transfer_ldb_url": f"/api/v1/accounting/transfer-ldb/{doc_id}" if full_res.get("accounting_operation") else None,
                     "processing_time_sec": round(proc_time, 3),
                     "invoice_data": saved_dict,
                 }
@@ -1705,8 +1862,9 @@ async def ingest_docs_email_webhook(
             )
             proc_time = time.perf_counter() - t0
 
-            if classification.category == DocumentCategory.FAKTURI and not classification.is_obscured:
-                # Invoice Pipeline
+            is_acc_doc = classification.category in (DocumentCategory.FAKTURI, DocumentCategory.KREDITNI_IZVESTIYA)
+            if is_acc_doc and not classification.is_obscured:
+                # Invoice & Credit Note Pipeline
                 res = await pool.submit_ocr_async(
                     file_path=tmp_path,
                     lang=lang,
@@ -1715,6 +1873,9 @@ async def ingest_docs_email_webhook(
                 )
                 if res.get("status") == "success" and res.get("invoice") is not None:
                     inv = res["invoice"]
+                    if classification.category == DocumentCategory.KREDITNI_IZVESTIYA:
+                        inv.invoice_metadata.is_credit_note = True
+                        inv.invoice_metadata.document_type = "CREDIT_NOTE"
 
                     # Statutory Contractor & Partner Verification against accounting.partners
                     from invoice_core.partner_verification import verify_invoice_parties
@@ -1744,6 +1905,18 @@ async def ingest_docs_email_webhook(
                     }
                     full_res["classification"] = classification.to_dict()
                     full_res["parties_verification"] = parties_rep.to_dict()
+
+                    if not parties_rep.has_critical_mismatch:
+                        acc_bundle = execute_accounting_pipeline_for_document(
+                            doc_id=doc_id,
+                            invoice_dict=full_res,
+                            file_name=att.filename,
+                            parties_rep=parties_rep,
+                        )
+                        if acc_bundle:
+                            full_res["accounting_bundle"] = acc_bundle
+                            full_res["accounting_operation"] = acc_bundle.get("accounting_operation")
+                            full_res["historical_match_report"] = acc_bundle.get("match_report")
 
                     with get_db_session() as db:
                         doc_rec = save_document_to_db(
@@ -1785,6 +1958,10 @@ async def ingest_docs_email_webhook(
                         "invoice_number": saved_dict.get("invoice_number"),
                         "supplier_name": saved_dict.get("supplier_name"),
                         "total_amount": saved_dict.get("total_amount"),
+                        "accounting_operation": full_res.get("accounting_operation"),
+                        "historical_match_report": full_res.get("historical_match_report"),
+                        "transfer_log_url": f"/api/v1/accounting/transfer-log/{doc_id}" if full_res.get("accounting_operation") else None,
+                        "transfer_ldb_url": f"/api/v1/accounting/transfer-ldb/{doc_id}" if full_res.get("accounting_operation") else None,
                         "status": saved_dict.get("status"),
                         "processing_time_sec": round(proc_time, 2),
                         "hitl_url": notif_res.get("summary", {}).get("hitl_url", f"http://localhost:8000/dashboard?doc_id={doc_id}"),
@@ -3236,6 +3413,7 @@ MOCK_ERP_RECEIVED: list[dict[str, Any]] = []
     response_class=HTMLResponse,
     summary="Human-in-the-Loop Web Dashboard",
 )
+@app.head("/dashboard", include_in_schema=False)
 async def dashboard_view():
     """Serve the interactive split-screen Human-in-the-Loop web dashboard."""
     html_file = Path("static/index.html")
@@ -3250,6 +3428,7 @@ async def dashboard_view():
     response_class=HTMLResponse,
     summary="Human-in-the-Loop Web Dashboard (Alias)",
 )
+@app.head("/hitl", include_in_schema=False)
 async def hitl_alias_view():
     """Alias for /dashboard."""
     return await dashboard_view()
@@ -3704,7 +3883,7 @@ async def test_webhook_endpoint(request: WebhookTestRequest):
     """Send a diagnostic ping payload to test connectivity to an external ERP webhook URL."""
     test_payload = {
         "event": "test.ping",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(BG_TZ).isoformat(),
         "message": "Diagnostic test ping from Bulgarian Invoice OCR Microservice",
     }
     success, code, err = await send_webhook_async(
@@ -4351,6 +4530,261 @@ async def tesseract_extract_invoice_endpoint(request: Request):
         "engine": "tesseract-v5-local",
     }
     return res
+
+
+# ---------------------------------------------------------------------------
+# Microinvest Delta Pro & Statutory Accounting Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/api/v1/accounting/transfer-log/{document_id}",
+    summary="Download Microinvest Delta Pro TRANSFER.LOG file",
+    tags=["Accounting & Delta Pro"],
+)
+async def download_transfer_log(document_id: str, db: Session = Depends(get_db)):
+    """Download native Microinvest Delta Pro Jet 2.0 binary TRANSFER.LOG file (65,536 bytes) for direct import."""
+    acc_path = Path(f".stored_documents/accounting/{document_id}/TRANSFER.LOG")
+    if acc_path.exists():
+        return FileResponse(
+            path=acc_path,
+            filename="TRANSFER.LOG",
+            media_type="application/octet-stream",
+        )
+
+    record = db.query(DocumentRecord).filter(DocumentRecord.id == document_id).first()
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    if record.ocr_result_json:
+        try:
+            ocr_data = json.loads(record.ocr_result_json)
+            b64_log = (
+                ocr_data.get("accounting_bundle", {}).get("transfer_files", {}).get("transfer_log_b64")
+                or ocr_data.get("custom_metadata", {}).get("transfer_files", {}).get("transfer_log_b64")
+            )
+            if b64_log:
+                content = base64.b64decode(b64_log)
+                acc_path.parent.mkdir(parents=True, exist_ok=True)
+                acc_path.write_bytes(content)
+                return FileResponse(
+                    path=acc_path,
+                    filename="TRANSFER.LOG",
+                    media_type="application/octet-stream",
+                )
+        except Exception as dec_err:
+            logger.warning("Error recovering TRANSFER.LOG from JSON for %s: %s", document_id, dec_err)
+
+    # If still not found, try generating on-the-fly
+    try:
+        from invoice_core.historical_matcher import process_invoice_and_create_accounting_package
+        raw_info = json.loads(record.ocr_result_json) if record.ocr_result_json else record.to_dict()
+        bundle = process_invoice_and_create_accounting_package(raw_info)
+        if bundle and bundle.get("transfer_log_bytes"):
+            acc_path.parent.mkdir(parents=True, exist_ok=True)
+            acc_path.write_bytes(bundle["transfer_log_bytes"])
+            if bundle.get("transfer_ldb_bytes"):
+                (acc_path.parent / "TRANSFER.ldb").write_bytes(bundle["transfer_ldb_bytes"])
+            return FileResponse(
+                path=acc_path,
+                filename="TRANSFER.LOG",
+                media_type="application/octet-stream",
+            )
+    except Exception as gen_err:
+        logger.warning("Error generating TRANSFER.LOG on the fly for %s: %s", document_id, gen_err)
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="TRANSFER.LOG file not found or could not be generated for this document",
+    )
+
+
+@app.get(
+    "/api/v1/accounting/transfer-ldb/{document_id}",
+    summary="Download Microinvest Delta Pro TRANSFER.ldb lock file",
+    tags=["Accounting & Delta Pro"],
+)
+async def download_transfer_ldb(document_id: str, db: Session = Depends(get_db)):
+    """Download companion Microinvest Delta Pro lock file TRANSFER.ldb (64 bytes)."""
+    acc_path = Path(f".stored_documents/accounting/{document_id}/TRANSFER.ldb")
+    if acc_path.exists():
+        return FileResponse(
+            path=acc_path,
+            filename="TRANSFER.ldb",
+            media_type="application/octet-stream",
+        )
+
+    record = db.query(DocumentRecord).filter(DocumentRecord.id == document_id).first()
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    if record.ocr_result_json:
+        try:
+            ocr_data = json.loads(record.ocr_result_json)
+            b64_ldb = (
+                ocr_data.get("accounting_bundle", {}).get("transfer_files", {}).get("transfer_ldb_b64")
+                or ocr_data.get("custom_metadata", {}).get("transfer_files", {}).get("transfer_ldb_b64")
+            )
+            if b64_ldb:
+                content = base64.b64decode(b64_ldb)
+                acc_path.parent.mkdir(parents=True, exist_ok=True)
+                acc_path.write_bytes(content)
+                return FileResponse(
+                    path=acc_path,
+                    filename="TRANSFER.ldb",
+                    media_type="application/octet-stream",
+                )
+        except Exception as dec_err:
+            logger.warning("Error recovering TRANSFER.ldb from JSON for %s: %s", document_id, dec_err)
+
+    # Generate companion ldb
+    from invoice_core.delta_pro_generator import DELTA_PRO_LDB_TEMPLATE
+    acc_path.parent.mkdir(parents=True, exist_ok=True)
+    acc_path.write_bytes(DELTA_PRO_LDB_TEMPLATE)
+    return FileResponse(
+        path=acc_path,
+        filename="TRANSFER.ldb",
+        media_type="application/octet-stream",
+    )
+
+
+@app.get(
+    "/api/v1/accounting/package/{document_id}",
+    summary="Download complete Microinvest Delta Pro import ZIP package",
+    tags=["Accounting & Delta Pro"],
+)
+async def download_delta_pro_package(document_id: str, db: Session = Depends(get_db)):
+    """Download ZIP archive containing TRANSFER.LOG, TRANSFER.ldb, and accounting metadata."""
+    import io
+    import zipfile
+
+    acc_path_log = Path(f".stored_documents/accounting/{document_id}/TRANSFER.LOG")
+    acc_path_ldb = Path(f".stored_documents/accounting/{document_id}/TRANSFER.ldb")
+    acc_path_json = Path(f".stored_documents/accounting/{document_id}/accounting_operation.json")
+
+    # Generate if not present
+    if not acc_path_log.exists():
+        record = db.query(DocumentRecord).filter(DocumentRecord.id == document_id).first()
+        if not record:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        try:
+            from invoice_core.historical_matcher import process_invoice_and_create_accounting_package
+            raw_info = json.loads(record.ocr_result_json) if record.ocr_result_json else record.to_dict()
+            bundle = process_invoice_and_create_accounting_package(raw_info)
+            if bundle and bundle.get("transfer_log_bytes"):
+                acc_path_log.parent.mkdir(parents=True, exist_ok=True)
+                acc_path_log.write_bytes(bundle["transfer_log_bytes"])
+                if bundle.get("transfer_ldb_bytes"):
+                    acc_path_ldb.write_bytes(bundle["transfer_ldb_bytes"])
+                (acc_path_log.parent / "accounting_operation.json").write_text(
+                    json.dumps(bundle, default=str, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+        except Exception as e:
+            logger.warning("Failed on-the-fly bundle generation for %s: %s", document_id, e)
+
+    if not acc_path_log.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Delta Pro package could not be generated")
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("TRANSFER.LOG", acc_path_log.read_bytes())
+        if acc_path_ldb.exists():
+            zf.writestr("TRANSFER.ldb", acc_path_ldb.read_bytes())
+        else:
+            from invoice_core.delta_pro_generator import DELTA_PRO_LDB_TEMPLATE
+            zf.writestr("TRANSFER.ldb", DELTA_PRO_LDB_TEMPLATE)
+        if acc_path_json.exists():
+            zf.writestr("accounting_operation.json", acc_path_json.read_bytes())
+
+    zip_buf.seek(0)
+    return Response(
+        content=zip_buf.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="Delta_Pro_Import_{document_id[:8]}.zip"'
+        },
+    )
+
+
+@app.get(
+    "/api/v1/accounting/operation/{document_id}",
+    summary="Get Statutory Accounting Operation & Historical Comparison Details",
+    tags=["Accounting & Delta Pro"],
+)
+async def get_accounting_operation_details(document_id: str, db: Session = Depends(get_db)):
+    record = db.query(DocumentRecord).filter(DocumentRecord.id == document_id).first()
+    acc_json_path = Path(f".stored_documents/accounting/{document_id}/accounting_operation.json")
+    if not record and acc_json_path.exists():
+        try:
+            saved_bundle = json.loads(acc_json_path.read_text(encoding="utf-8"))
+            log_path = Path(f".stored_documents/accounting/{document_id}/TRANSFER.LOG")
+            ldb_path = Path(f".stored_documents/accounting/{document_id}/TRANSFER.ldb")
+            return {
+                "document_id": document_id,
+                "file_name": saved_bundle.get("file_name", document_id),
+                "status": "completed",
+                "accounting_operation": saved_bundle.get("accounting_operation"),
+                "historical_match_report": saved_bundle.get("match_report"),
+                "transfer_files": {
+                    "has_transfer_log": log_path.exists(),
+                    "has_transfer_ldb": ldb_path.exists(),
+                    "download_log_url": f"/api/v1/accounting/transfer-log/{document_id}",
+                    "download_ldb_url": f"/api/v1/accounting/transfer-ldb/{document_id}",
+                },
+            }
+        except Exception:
+            pass
+
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    ocr_data = {}
+    if record.ocr_result_json:
+        try:
+            ocr_data = json.loads(record.ocr_result_json)
+        except Exception:
+            pass
+
+    acc_op = ocr_data.get("accounting_operation")
+    match_rep = ocr_data.get("historical_match_report")
+    bundle = ocr_data.get("accounting_bundle")
+
+    if not acc_op and bundle:
+        acc_op = bundle.get("accounting_operation")
+    if not match_rep and bundle:
+        match_rep = bundle.get("match_report")
+
+    if not acc_op:
+        try:
+            from invoice_core.historical_matcher import process_invoice_and_create_accounting_package
+            new_bundle = process_invoice_and_create_accounting_package(ocr_data or record.to_dict())
+            if new_bundle:
+                acc_op = new_bundle.get("accounting_operation")
+                match_rep = new_bundle.get("match_report")
+        except Exception as gen_err:
+            logger.warning("Could not generate accounting operation for %s: %s", document_id, gen_err)
+
+    if not acc_op:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Accounting operation not available for this document (e.g. non-commercial document or critical contractor mismatch)",
+        )
+
+    log_path = Path(f".stored_documents/accounting/{document_id}/TRANSFER.LOG")
+    ldb_path = Path(f".stored_documents/accounting/{document_id}/TRANSFER.ldb")
+
+    return {
+        "document_id": document_id,
+        "file_name": record.file_name,
+        "status": record.status,
+        "accounting_operation": acc_op,
+        "historical_match_report": match_rep,
+        "transfer_files": {
+            "has_transfer_log": log_path.exists(),
+            "has_transfer_ldb": ldb_path.exists(),
+            "download_log_url": f"/api/v1/accounting/transfer-log/{document_id}",
+            "download_ldb_url": f"/api/v1/accounting/transfer-ldb/{document_id}",
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

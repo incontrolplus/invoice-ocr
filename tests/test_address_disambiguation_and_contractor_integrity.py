@@ -174,3 +174,68 @@ async def test_accounting_partners_schema_query():
         call_args = mock_get.call_args_list[0]
         assert call_args.kwargs["headers"].get("Accept-Profile") == "accounting"
 
+
+def test_two_column_party_header_isolation():
+    """Verify that supplier header tokens in right column do not bleed from left recipient column."""
+    # Recipient on left (center_x < 1000), Supplier on right (center_x >= 1000)
+    lines = [
+        # Left column: Recipient
+        LogicalLine([
+            _create_token("получател", 400, 150, 100, 25),
+        ]),
+        LogicalLine([
+            _create_token("БИЛДИНГ", 400, 190, 80, 25),
+            _create_token("11", 490, 190, 30, 25),
+            _create_token("ООД", 530, 190, 50, 25),
+        ]),
+        LogicalLine([
+            _create_token("ЕИК", 400, 230, 50, 20),
+            _create_token("206062202", 460, 230, 100, 20),
+        ]),
+        # Right column: Supplier
+        LogicalLine([
+            _create_token("МАГНЕЗИЯ", 1500, 60, 150, 30),
+        ]),
+        LogicalLine([
+            _create_token("доставчик", 1500, 140, 100, 25),
+        ]),
+        LogicalLine([
+            _create_token("ЕИК", 1500, 180, 50, 20),
+            _create_token("114631464", 1560, 180, 100, 20),
+        ]),
+    ]
+    tokens = [t for line in lines for t in line.tokens]
+
+    supp = extract_party(lines, tokens, role="supplier")
+    rec = extract_party(lines, tokens, role="recipient")
+
+    assert supp.eik == "114631464"
+    assert "БИЛДИНГ" not in (supp.name or "")
+    assert "МАГНЕЗИЯ" in (supp.name or "")
+
+    assert rec.eik == "206062202"
+    assert "БИЛДИНГ 11" in (rec.name or "")
+
+
+def test_reconcile_parties_cross_contamination():
+    """Verify that cross-column party name bleed between distinct EIKs is resolved."""
+    from invoice_core.pipeline import reconcile_parties_cross_contamination
+
+    # Simulating a scenario where supplier mistakenly got recipient's name
+    supplier = Party(
+        name="БИЛДИНГ 11 ООД",  # Corrupted by column bleed
+        eik="114631464",        # Magnezia EOOD
+    )
+    recipient = Party(
+        name="Билдинг 11",
+        eik="206062202",
+    )
+    raw_evidence = {}
+
+    reconcile_parties_cross_contamination(supplier, recipient, raw_ocr_evidence=raw_evidence)
+
+    assert supplier.name == "МАГНЕЗИЯ ЕООД"
+    assert recipient.name == "Билдинг 11"
+    assert raw_evidence.get("supplier_name_cross_contamination_fixed") is True
+
+

@@ -140,8 +140,9 @@ def test_build_supabase_invoice_payload():
 
     # Audit & Attachment
     assert audit["event_type"] == "OCR_INGESTED"
-    assert att["file_name"] == "factura_1001.pdf"
-    assert att["mime_type"] == "application/pdf"
+    primary_att = att[0] if isinstance(att, list) else att
+    assert primary_att["file_name"] == "factura_1001.pdf"
+    assert primary_att["mime_type"] == "application/pdf"
 
 
 @pytest.mark.anyio
@@ -167,3 +168,61 @@ async def test_sync_invoice_mocked():
             assert res["invoice_number"] == "1000000001"
             assert res["items_count"] == 1
             assert mock_post.call_count >= 3
+
+
+def test_build_supabase_invoice_payload_with_partner_enrichment():
+    """Verify that building 11 invoices enrich missing/broken OCR fields from contractor master."""
+    from contractor_verification import ContractorVerificationResult, CompanyStatus, VatRegistrationStatus
+
+    mock_magnezia = ContractorVerificationResult(
+        country_code="BG",
+        identifier="114631464",
+        company_name="МАГНЕЗИЯ ЕООД",
+        legal_status=CompanyStatus.ACTIVE,
+        vat_status=VatRegistrationStatus.REGISTERED,
+        address="гр. Плевен, 5800, ГЕОРГИ САВА РАКОВСКИ 57, вх. А, ет. 3, ап. 9",
+        mol_name="АНЕЛИЯ ТОМАС НАЦУЛИС",
+        phone="064 807 002",
+        email="spektar_pln@abv.bg",
+        city="Плевен",
+        partner_id="ee584103-f876-424a-ae91-74fb5192d7c7",
+    )
+
+    ocr_data = {
+        "normalized_data": {
+            "invoice_metadata": {
+                "invoice_number": "0090252073",
+                "date_issued": "2026-08-31",
+                "currency": "EUR",
+            },
+            "supplier": {
+                "name": "НЕИЗВЕСТЕН ДОСТАВЧИК",
+                "eik": "114631464",
+            },
+            "recipient": {
+                "name": "Билдинг 11",
+                "eik": "206062202",
+            },
+            "financial_summary": {
+                "tax_base": 94.31,
+                "vat_amount": 18.86,
+                "total_amount_due": 113.17,
+            },
+        },
+        "validation_results": {"is_valid": True},
+    }
+
+    with patch("contractor_verification.verify_contractor", return_value=mock_magnezia):
+        inv_row, items, audit, att = build_supabase_invoice_payload(
+            doc_id="doc-test-5678",
+            ocr_result=ocr_data,
+            file_name="3_2026-09-11_11-08-59.pdf",
+        )
+
+        assert inv_row["supplier_name"] == "МАГНЕЗИЯ ЕООД"
+        assert inv_row["supplier_mol"] == "АНЕЛИЯ ТОМАС НАЦУЛИС"
+        assert inv_row["supplier_phone"] == "064 807 002"
+        assert inv_row["supplier_email"] == "spektar_pln@abv.bg"
+        assert inv_row["supplier_city"] == "Плевен"
+        assert inv_row["supplier_partner_id"] == "ee584103-f876-424a-ae91-74fb5192d7c7"
+

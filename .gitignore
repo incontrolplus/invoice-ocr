@@ -19,3 +19,8 @@ test_script.py
 .agents/
 .playwright-mcp/
 *.png
+cache.json
+scratch_*.json
+comparison_export/
+*.pdf
+

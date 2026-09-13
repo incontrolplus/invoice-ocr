@@ -14,8 +14,14 @@ services:
       - STORAGE_DIR=/data/stored_documents
       - OMP_THREAD_LIMIT=1
       - MAX_OCR_WORKERS=2
+      - SUPABASE_URL=${SUPABASE_URL:-http://100.83.83.8:8002}
+      - SUPABASE_SYNC_ENABLED=true
+      - PROJECT_ROOT=/app
     volumes:
       - api_data:/data
+      - ./Building_11:/app/Building_11
+      - ./comparison_export:/app/comparison_export
+      - ./config:/app/config
     depends_on:
       db:
         condition: service_healthy

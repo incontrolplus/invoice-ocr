@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import email.mime.multipart
 import email.mime.text
 import json
@@ -22,6 +23,8 @@ import smtplib
 from typing import Any, Optional
 
 import httpx
+
+BG_TZ = ZoneInfo("Europe/Sofia")
 
 from .constants import DEFAULT_HITL_BASE_URL
 
@@ -209,7 +212,7 @@ def build_email_confirmation_html(summary: InvoiceNotificationSummary) -> str:
         </div>
 
         <div style="background:#f9fafb; padding:16px 24px; border-top:1px solid #e5e7eb; font-size:12px; color:#9ca3af; text-align:center;">
-            Документ ID: {summary.document_id} &bull; OpenBalancer Ingestion Engine &bull; Време: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
+            Документ ID: {summary.document_id} &bull; OpenBalancer Ingestion Engine &bull; Време: {datetime.now(BG_TZ).strftime('%Y-%m-%d %H:%M:%S')}
         </div>
     </div>
 </body>

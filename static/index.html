@@ -890,6 +890,38 @@
         </div>
       </div>
 
+      <!-- Microinvest Delta Pro Accounting & Transfer Package Card -->
+      <div class="delta-pro-card" id="delta-pro-card" style="margin: 0.6rem 1rem; padding: 0.85rem; border-radius: 0.5rem; background: #f8fafc; border: 1px solid #cbd5e1;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <span style="font-size: 1.15rem;">📑</span>
+            <strong style="font-size: 0.88rem; color: #1e293b;">Microinvest Delta Pro Трансферен Пакет</strong>
+            <span id="dp-badge" style="font-size: 0.7rem; padding: 0.15rem 0.45rem; border-radius: 9999px; background: #dcfce7; color: #15803d; font-weight: 600;">Готов за импорт</span>
+          </div>
+          <div style="display: flex; gap: 0.4rem;">
+            <a id="btn-dl-transfer-log" class="btn btn-secondary btn-sm" href="#" download="TRANSFER.LOG" title="Свали бинарен TRANSFER.LOG (65,536 байта)">⬇️ TRANSFER.LOG</a>
+            <a id="btn-dl-transfer-ldb" class="btn btn-secondary btn-sm" href="#" download="TRANSFER.ldb" title="Свали Access lock файл TRANSFER.ldb (64 байта)">⬇️ TRANSFER.ldb</a>
+            <a id="btn-dl-package-zip" class="btn btn-primary btn-sm" href="#" download title="Свали пълен ZIP пакет (LOG + LDB + метаданни)">📦 Свали Пакет (ZIP)</a>
+          </div>
+        </div>
+        <div id="dp-details-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; font-size: 0.8rem; background: #ffffff; padding: 0.6rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+          <div>
+            <div style="color: #64748b; font-size: 0.72rem;">Предприятие (Клиент):</div>
+            <div id="dp-client-name" style="font-weight: 600; color: #0f172a;">БИЛДИНГ 11 ООД</div>
+          </div>
+          <div>
+            <div style="color: #64748b; font-size: 0.72rem;">Избран контрагент (по име):</div>
+            <div id="dp-partner-name" style="font-weight: 600; color: #0f172a;">МАГНЕЗИЯ ЕООД</div>
+          </div>
+          <div style="grid-column: 1 / -1; margin-top: 0.2rem; border-top: 1px dashed #cbd5e1; padding-top: 0.4rem;">
+            <div style="color: #64748b; font-size: 0.72rem; margin-bottom: 0.2rem;">Т-образен счетоводен запис (601/401):</div>
+            <div id="dp-t-account-entry" style="font-family: monospace; font-size: 0.82rem; background: #f1f5f9; padding: 0.4rem 0.6rem; border-radius: 0.25rem;">
+              Д-т 601 (Разходи за материали): 94.31 EUR | Д-т 4531 (ДДС при покупки 20%): 18.86 EUR | К-т 401 (Доставчици): 113.17 EUR
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Active Field Target Bar -->
       <div class="active-target-bar" id="active-target-bar">
         <span>🎯 <strong>Клик в документа попълва:</strong> <span id="active-field-name-display" style="font-weight: 700; color: var(--primary);">Номер на фактура</span></span>
@@ -1245,6 +1277,49 @@
           .catch(() => updateRlhfBadge(null));
       } else {
         updateRlhfBadge(null);
+      }
+
+      // Update Microinvest Delta Pro transfer package card
+      updateDeltaProCard(doc);
+    }
+
+    async function updateDeltaProCard(doc) {
+      const card = document.getElementById("delta-pro-card");
+      if (!card) return;
+      const docId = doc.id || currentDocId;
+      if (!docId) {
+        card.style.display = "none";
+        return;
+      }
+      card.style.display = "block";
+
+      const btnLog = document.getElementById("btn-dl-transfer-log");
+      const btnLdb = document.getElementById("btn-dl-transfer-ldb");
+      const btnZip = document.getElementById("btn-dl-package-zip");
+
+      btnLog.href = `/api/v1/accounting/transfer-log/${docId}`;
+      btnLdb.href = `/api/v1/accounting/transfer-ldb/${docId}`;
+      btnZip.href = `/api/v1/accounting/package/${docId}`;
+
+      try {
+        const resp = await fetch(`/api/v1/accounting/operation/${docId}`);
+        if (resp.ok) {
+          const res = await resp.json();
+          const op = res.accounting_operation || {};
+          const mr = res.historical_match_report || {};
+
+          document.getElementById("dp-client-name").innerText = op.client_company || mr.client_company_name || "БИЛДИНГ 11 ООД";
+          document.getElementById("dp-partner-name").innerText = op.contractor_name || mr.contractor_name || "МАГНЕЗИЯ ЕООД";
+
+          const debits = (op.debit_entries || []).map(d => `Д-т ${d.account} (${d.account_name}): ${Number(d.amount).toFixed(2)} ${d.currency || 'EUR'}`).join(" | ");
+          const credits = (op.credit_entries || []).map(c => `К-т ${c.account} (${c.account_name}): ${Number(c.amount).toFixed(2)} ${c.currency || 'EUR'}`).join(" | ");
+          document.getElementById("dp-t-account-entry").innerText = `${debits} || ${credits}`;
+          document.getElementById("dp-badge").innerText = "✓ Готов за импорт";
+          document.getElementById("dp-badge").style.background = "#dcfce7";
+          document.getElementById("dp-badge").style.color = "#15803d";
+        }
+      } catch (e) {
+        console.warn("Could not fetch accounting operation:", e);
       }
     }
 

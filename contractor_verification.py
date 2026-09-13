@@ -93,6 +93,10 @@ class ContractorVerificationResult:
     address: str | None = None                 # Primary statutory registered address (Седалище и адрес на управление)
     seat_address: str | None = None            # Decomposed / verified Commercial Register seat
     mol_name: str | None = None                # Person accountable (МОЛ / Управител)
+    phone: str | None = None                   # Contact phone number
+    email: str | None = None                   # Contact email address
+    city: str | None = None                    # City / settlement
+    partner_id: str | None = None              # UUID in accounting.partners
     trade_outlets: list[dict[str, Any]] = field(default_factory=list) # Trade outlets / stores under Наредба Н-18
     managers: list[dict[str, Any]] = field(default_factory=list)      # Company managers from Commercial Register
     nkids: list[dict[str, Any]] = field(default_factory=list)         # NKID economic activities
@@ -103,6 +107,15 @@ class ContractorVerificationResult:
     is_valid_for_tax_credit: bool = True
     issues: list[str] = field(default_factory=list)
     raw_data: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def vat_number(self) -> str | None:
+        """Derive standard VAT number if registered."""
+        if self.vat_status == VatRegistrationStatus.REGISTERED and self.identifier:
+            if self.identifier.startswith(self.country_code):
+                return self.identifier
+            return f"{self.country_code}{self.identifier}"
+        return None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to JSON-serializable dictionary."""
@@ -137,6 +150,10 @@ class ContractorVerificationResult:
             address=self.address,
             seat_address=self.seat_address,
             mol_name=self.mol_name,
+            phone=self.phone,
+            email=self.email,
+            city=self.city,
+            partner_id=self.partner_id,
             trade_outlets=list(self.trade_outlets),
             managers=list(self.managers),
             nkids=list(self.nkids),
@@ -1387,10 +1404,15 @@ class ContractorVerifier:
                             parts.append(street_part)
                             seat_addr = ", ".join(parts)
 
+                        full_name = row.get("legal_name")
+                        legal_f = row.get("legal_form")
+                        if full_name and legal_f and legal_f.upper() not in full_name.upper():
+                            full_name = f"{full_name} {legal_f}"
+
                         return ContractorVerificationResult(
                             country_code=row.get("country_code", country),
                             identifier=row.get("eik", ident),
-                            company_name=row.get("legal_name"),
+                            company_name=full_name or row.get("legal_name"),
                             legal_status=legal_st,
                             vat_status=vat_st,
                             vat_registration_date=str(row.get("vat_registration_date")) if row.get("vat_registration_date") else None,
@@ -1399,6 +1421,10 @@ class ContractorVerifier:
                             address=row.get("address"),
                             seat_address=seat_addr or row.get("address"),
                             mol_name=row.get("mol_name"),
+                            phone=row.get("phone"),
+                            email=row.get("email"),
+                            city=row.get("city") or row.get("seat_settlement"),
+                            partner_id=str(row.get("id")) if row.get("id") else None,
                             trade_outlets=row.get("trade_outlets") or [],
                             managers=row.get("managers") or [],
                             nkids=row.get("nkids") or [],

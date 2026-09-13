@@ -101,7 +101,10 @@ COPY --chown=appuser:appgroup invoice_core/ ./invoice_core/
 COPY --chown=appuser:appgroup config/ ./config/
 COPY --chown=appuser:appgroup vendor_profiles/ ./vendor_profiles/
 COPY --chown=appuser:appgroup static/ ./static/
-COPY --chown=appuser:appgroup tessdata/ ./tessdata/
+COPY --chown=appuser:appgroup comparison_export/ ./comparison_export/
+COPY --chown=appuser:appgroup Building_11/ ./Building_11/
+
+ENV PROJECT_ROOT=/app
 
 # Switch to unprivileged runtime user
 USER appuser

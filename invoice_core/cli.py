@@ -211,6 +211,22 @@ def main() -> None:
         action="store_true",
         help="Clear OCR token cache directory before processing",
     )
+    parser.add_argument(
+        "--export-delta-pro",
+        action="store_true",
+        help="Generate Microinvest Delta Pro transfer package (TRANSFER.LOG & TRANSFER.ldb)",
+    )
+    parser.add_argument(
+        "--delta-pro-dir",
+        type=str,
+        default=None,
+        help="Custom destination directory for TRANSFER.LOG & TRANSFER.ldb (default: <company_name> or Building_11)",
+    )
+    parser.add_argument(
+        "--sync-supabase",
+        action="store_true",
+        help="Synchronize extracted invoice and accounting package to Supabase database",
+    )
     args = parser.parse_args()
 
     # Configure logging to stderr
@@ -405,6 +421,88 @@ def main() -> None:
                 auto_generate_protocols=args.auto_protocol_117,
                 create_zip=True,
             )
+
+        # Microinvest Delta Pro Package Export & Accounting Operation
+        is_building_11 = (
+            str(getattr(invoice.recipient, "eik", "") or "") == "206062202"
+            or str(getattr(invoice.supplier, "eik", "") or "") == "206062202"
+            or "билдинг 11" in str(getattr(invoice.recipient, "name", "") or "").lower()
+            or "билдинг 11" in str(getattr(invoice.supplier, "name", "") or "").lower()
+        )
+
+        bundle = None
+        if args.export_delta_pro or is_building_11 or args.delta_pro_dir:
+            try:
+                from invoice_core.historical_matcher import process_invoice_and_create_accounting_package
+                inv_dict = json.loads(json_output)
+                bundle = process_invoice_and_create_accounting_package(inv_dict)
+                if bundle:
+                    log_bytes = bundle.get("transfer_log_bytes")
+                    ldb_bytes = bundle.get("transfer_ldb_bytes")
+                    acc_op = bundle.get("accounting_operation", {})
+                    co_name = acc_op.get("client_company") or "Building_11"
+                    safe_co = "Building_11" if "11" in co_name else co_name.replace(" ", "_")
+
+                    target_dir = Path(args.delta_pro_dir) if args.delta_pro_dir else Path(safe_co)
+                    target_dir.mkdir(parents=True, exist_ok=True)
+
+                    if log_bytes:
+                        (target_dir / "TRANSFER.LOG").write_bytes(log_bytes)
+                    if ldb_bytes:
+                        (target_dir / "TRANSFER.ldb").write_bytes(ldb_bytes)
+
+                    # Also sync to USB if /Volumes/NO NAME is mounted
+                    usb_dir = Path(f"/Volumes/NO NAME/{safe_co}")
+                    if usb_dir.parent.exists():
+                        try:
+                            usb_dir.mkdir(parents=True, exist_ok=True)
+                            if log_bytes:
+                                (usb_dir / "TRANSFER.LOG").write_bytes(log_bytes)
+                            if ldb_bytes:
+                                (usb_dir / "TRANSFER.ldb").write_bytes(ldb_bytes)
+                        except Exception as usb_err:
+                            logger.debug("Could not copy to USB: %s", usb_err)
+
+                    # Output user-facing T-образен счетоводен запис report on stderr
+                    curr = acc_op.get("currency", "BGN")
+                    sys.stderr.write("\n" + "=" * 80 + "\n")
+                    sys.stderr.write("              MICROINVEST DELTA PRO СЧЕТОВОДЕН ТРАНСФЕРЕН ПАКЕТ\n")
+                    sys.stderr.write("=" * 80 + "\n")
+                    sys.stderr.write(f"Клиент:         {acc_op.get('client_company')} (ЕИК: {bundle.get('match_report', {}).get('client_company_eik')})\n")
+                    sys.stderr.write(f"Партньор:       {acc_op.get('contractor_name')} (ЕИК: {acc_op.get('contractor_eik')})\n")
+                    sys.stderr.write(f"Документ №:     {acc_op.get('document_number')} от {acc_op.get('document_date')} ({acc_op.get('document_type')})\n")
+                    sys.stderr.write(f"Валута:         {curr}\n")
+                    sys.stderr.write("-" * 80 + "\n")
+                    sys.stderr.write("Счетоводна операция (Т-образен счетоводен запис):\n")
+                    for de in acc_op.get("debit_entries", []):
+                        sys.stderr.write(f"  Д-т {de['account']:<5} ({de['account_name']:<30}): {de['amount']:>10.2f} {curr}\n")
+                    for ce in acc_op.get("credit_entries", []):
+                        sys.stderr.write(f"  К-т {ce['account']:<5} ({ce['account_name']:<30}): {ce['amount']:>10.2f} {curr}\n")
+                    sys.stderr.write("-" * 80 + "\n")
+                    sys.stderr.write("Файлове готови за директен импорт в Microinvest Delta Pro:\n")
+                    sys.stderr.write(f"  • TRANSFER.LOG:  {target_dir / 'TRANSFER.LOG'} ({len(log_bytes or b''):,} байта)\n")
+                    sys.stderr.write(f"  • TRANSFER.ldb:  {target_dir / 'TRANSFER.ldb'} ({len(ldb_bytes or b''):,} байта)\n")
+                    sys.stderr.write("=" * 80 + "\n\n")
+            except Exception as dp_err:
+                logger.warning("Could not generate Delta Pro transfer files: %s", dp_err)
+
+        if args.sync_supabase:
+            try:
+                from supabase_sync import is_supabase_configured, sync_invoice_to_supabase
+                import asyncio
+                if is_supabase_configured():
+                    inv_dict = json.loads(json_output)
+                    asyncio.run(sync_invoice_to_supabase(
+                        doc_id=image_path.stem,
+                        ocr_result=inv_dict,
+                        file_name=image_path.name,
+                        file_path=image_path,
+                        source_channel="CLI_MANUAL",
+                        accounting_bundle=bundle,
+                    ))
+                    sys.stderr.write("✓ Успешно синхронизирано със Supabase база данни.\n")
+            except Exception as sb_err:
+                logger.warning("Supabase sync error: %s", sb_err)
 
         # stdout: ONLY the valid JSON document
         print(json_output)

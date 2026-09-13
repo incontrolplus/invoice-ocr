@@ -11,8 +11,11 @@ Provides persistent storage via SQLAlchemy (PostgreSQL / SQLite):
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import hashlib
 import io
+
+BG_TZ = ZoneInfo("Europe/Sofia")
 import json
 import logging
 import os
@@ -92,11 +95,11 @@ class DocumentRecord(Base):
     mime_type = Column(String(64), nullable=True)
     file_size_bytes = Column(Integer, default=0)
 
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(BG_TZ), nullable=False)
     updated_at = Column(
         DateTime,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(BG_TZ),
+        onupdate=lambda: datetime.now(BG_TZ),
         nullable=False,
     )
 
@@ -248,7 +251,7 @@ class AuditTrailRecord(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     document_id = Column(String(64), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
-    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    timestamp = Column(DateTime, default=lambda: datetime.now(BG_TZ), nullable=False)
     actor = Column(String(128), default="system", nullable=False)
     action = Column(String(64), nullable=False)  # uploaded, processed, field_corrected, approved, exported, webhook_sent
     field_name = Column(String(128), nullable=True)
@@ -326,7 +329,7 @@ class WebhookLogRecord(Base):
     response_body = Column(Text, nullable=True)
     success = Column(Boolean, default=False)
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(BG_TZ), nullable=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -360,7 +363,7 @@ class InvoiceFeedbackRecord(Base):
     reward_score = Column(Float, default=1.0)
     actor = Column(String(64), default="accountant")
     details_json = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(BG_TZ), nullable=False, index=True)
 
     document = relationship("DocumentRecord", back_populates="feedback_records")
 
@@ -609,7 +612,7 @@ def save_document_to_db(
             "ocr_result_json", "webhook_url", "webhook_status",
         ]:
             setattr(existing, attr, getattr(record, attr))
-        existing.updated_at = datetime.now(timezone.utc)
+        existing.updated_at = datetime.now(BG_TZ)
         existing.corrected_data_json = None  # Reset corrections on re-process
         db.add(existing)
         record = existing  # Use existing record for audit
@@ -641,7 +644,8 @@ def save_document_to_db(
             import asyncio
             import threading
 
-            channel = "EMAIL_INGEST" if ocr_result.get("source_channel") == "email" else "MANUAL_UPLOAD"
+            src_chan = str(ocr_result.get("source_channel") or "").lower()
+            channel = "EMAIL_INGEST" if any(k in src_chan for k in ("email", "docs")) else "MANUAL_UPLOAD"
             sender = ocr_result.get("email_metadata", {}).get("sender")
 
             def _run_sync_thread():
@@ -656,6 +660,7 @@ def save_document_to_db(
                         source_channel=channel,
                         source_sender=sender,
                         processing_time=processing_time,
+                        accounting_bundle=ocr_result.get("accounting_bundle"),
                     ))
                 except Exception as t_err:
                     logger.warning("Background Supabase sync error: %s", t_err)
@@ -729,7 +734,7 @@ def save_classified_document_to_db(
         existing.processing_time_sec = round(processing_time, 3)
         existing.status = status_str
         existing.ocr_result_json = json.dumps(ocr_payload, ensure_ascii=False)
-        existing.updated_at = datetime.now(timezone.utc)
+        existing.updated_at = datetime.now(BG_TZ)
         db.add(existing)
         record = existing
     else:
@@ -1062,7 +1067,7 @@ def update_document_corrections(
         logger.warning("Re-validation of corrected document %s failed: %s", doc_id, exc)
 
     record.corrected_data_json = json.dumps(merged_data, ensure_ascii=False, default=str)
-    record.updated_at = datetime.now(timezone.utc)
+    record.updated_at = datetime.now(BG_TZ)
 
     # Save audit logs for all diffs
     for diff in diffs:
@@ -1111,7 +1116,7 @@ def approve_document_in_db(
         return None
 
     record.status = "approved"
-    record.updated_at = datetime.now(timezone.utc)
+    record.updated_at = datetime.now(BG_TZ)
     if webhook_url:
         record.webhook_url = webhook_url
 

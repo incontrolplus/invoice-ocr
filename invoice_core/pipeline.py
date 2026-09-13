@@ -202,7 +202,13 @@ def reconcile_party_with_contractor_master(
         # Keep the recognized name untouched so validator flags the discrepancy!
     else:
         # For EXACT or SIMILAR (e.g. OCR typos, abbreviations, trade names), align with canonical name
-        if not party.name or len(party.name.strip()) < 3 or (c_res.company_name and party.name.upper() not in c_res.company_name.upper()):
+        from .extraction import LEGAL_FORM_PATTERN
+        if (
+            not party.name
+            or len(party.name.strip()) < 3
+            or not LEGAL_FORM_PATTERN.search(party.name)
+            or (c_res.company_name and party.name.strip().upper() != c_res.company_name.strip().upper())
+        ):
             party.name = c_res.company_name
 
     # 2. Canonical MOL alignment
@@ -235,6 +241,60 @@ def reconcile_party_with_contractor_master(
 
         # Always enforce canonical registered office on party.address
         party.address = canonical_seat
+
+
+def reconcile_parties_cross_contamination(
+    supplier: Party,
+    recipient: Party,
+    raw_ocr_evidence: dict[str, Any] | None = None,
+) -> None:
+    """Enforce Party Separation Invariant and prevent cross-column name contamination.
+
+    If supplier and recipient have distinct validated EIKs, but one party extracted the name
+    of the other party (e.g. from column bleed in headers or shared banners),
+    detect the collision and restore the canonical name from the verified contractor master.
+    """
+    if not supplier or not recipient:
+        return
+    if not supplier.eik or not recipient.eik or supplier.eik == recipient.eik:
+        return
+
+    from invoice_core.partner_verification import compute_company_name_similarity
+    from contractor_verification import verify_contractor
+
+    if supplier.name and recipient.name:
+        sim_score, _, _ = compute_company_name_similarity(supplier.name, [recipient.name])
+        if sim_score >= 0.7:
+            supp_res = verify_contractor(supplier.eik)
+            rec_res = verify_contractor(recipient.eik)
+
+            supp_eik_name = supp_res.company_name if supp_res else None
+            rec_eik_name = rec_res.company_name if rec_res else None
+
+            if supp_eik_name and rec_eik_name:
+                supp_vs_rec_reg, _, _ = compute_company_name_similarity(supplier.name, [rec_eik_name])
+                supp_vs_supp_reg, _, _ = compute_company_name_similarity(supplier.name, [supp_eik_name])
+
+                if supp_vs_rec_reg >= 0.7 and supp_vs_supp_reg < 0.5:
+                    logger.warning(
+                        "Cross-column party contamination detected: supplier name '%s' matches recipient '%s' (EIK %s). Canonicalizing supplier to '%s' (EIK %s).",
+                        supplier.name, rec_eik_name, recipient.eik, supp_eik_name, supplier.eik,
+                    )
+                    supplier.name = supp_eik_name
+                    if raw_ocr_evidence is not None:
+                        raw_ocr_evidence["supplier_name_cross_contamination_fixed"] = True
+
+                rec_vs_supp_reg, _, _ = compute_company_name_similarity(recipient.name, [supp_eik_name])
+                rec_vs_rec_reg, _, _ = compute_company_name_similarity(recipient.name, [rec_eik_name])
+
+                if rec_vs_supp_reg >= 0.7 and rec_vs_rec_reg < 0.5:
+                    logger.warning(
+                        "Cross-column party contamination detected: recipient name '%s' matches supplier '%s' (EIK %s). Canonicalizing recipient to '%s' (EIK %s).",
+                        recipient.name, supp_eik_name, supplier.eik, rec_eik_name, recipient.eik,
+                    )
+                    recipient.name = rec_eik_name
+                    if raw_ocr_evidence is not None:
+                        raw_ocr_evidence["recipient_name_cross_contamination_fixed"] = True
 
 
 def _extract_and_validate_from_tokens(
@@ -410,6 +470,11 @@ def _extract_and_validate_from_tokens(
             metadata=invoice.invoice_metadata,
             raw_ocr_evidence=invoice.raw_ocr_evidence,
         )
+        reconcile_parties_cross_contamination(
+            invoice.supplier,
+            invoice.recipient,
+            raw_ocr_evidence=invoice.raw_ocr_evidence,
+        )
         invoice.line_items = extract_goods_receipt_line_items(lines, tokens)
         curr = gr.total_amount.currency or "BGN"
         invoice.financial_summary = FinancialSummary(
@@ -460,6 +525,11 @@ def _extract_and_validate_from_tokens(
         invoice.recipient,
         role="recipient",
         metadata=invoice.invoice_metadata,
+        raw_ocr_evidence=invoice.raw_ocr_evidence,
+    )
+    reconcile_parties_cross_contamination(
+        invoice.supplier,
+        invoice.recipient,
         raw_ocr_evidence=invoice.raw_ocr_evidence,
     )
 
