@@ -1168,6 +1168,7 @@
         </div>
         <div style="display: flex; gap: 0.4rem; align-items: center;">
           <span id="batch-status-msg" style="color: var(--success); font-weight: 600;"></span>
+          <button class="btn btn-secondary btn-sm" onclick="bridgeToWinXpVm()" title="Прехвърли директно флашката или споделената папка към виртуалната машина в UTM">🖥️ Прехвърли към WinXP VM</button>
           <button class="btn btn-primary btn-sm" onclick="syncBatchToDropFolder()">📁 Авто-синхрон към C:\TRANSFER.LOG</button>
         </div>
       </div>
@@ -2468,6 +2469,62 @@
         }
       } catch (e) {
         msg.innerText = "❌ " + e.message;
+      }
+    }
+
+    async function bridgeToWinXpVm() {
+      const msg = document.getElementById("batch-status-msg");
+      msg.innerText = "Свързване с UTM WinXP VM...";
+      try {
+        const stResp = await fetch("/api/v1/accounting/utm-bridge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "status" })
+        });
+        const stData = await stResp.json();
+        if (!stData.is_running) {
+          showToast("⚠️ UTM Windows XP VM не е стартирана (" + (stData.status || "изключена") + ")", true);
+          msg.innerText = "⚠️ VM не е стартирана";
+          return;
+        }
+
+        showToast("Копиране на TRANSFER файлове за Делта Pro...");
+        await fetch("/api/v1/accounting/utm-bridge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "stage", firm_slug: "Building_11", firm_eik: "206062202" })
+        });
+
+        const usbResp = await fetch("/api/v1/accounting/utm-bridge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "usb-list" })
+        });
+        const usbData = await usbResp.json();
+        const udisk = (usbData.devices || []).find(d => d.vid_pid === "ABCD:1234" || (d.name && d.name.includes("UDisk")));
+
+        if (udisk) {
+          showToast("Свързване на флашката " + udisk.vid_pid + " към Windows XP...");
+          const connResp = await fetch("/api/v1/accounting/utm-bridge", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "usb-connect", device_id: udisk.vid_pid })
+          });
+          const connData = await connResp.json();
+          if (connData.ok) {
+            msg.innerText = "✅ Флашката е в WinXP (E:\\)";
+            showToast("Флашката е монтирана в Windows XP! Готова за Обмен -> Импорт в Делта");
+          } else {
+            msg.innerText = "✅ Записано в: Z:\\206062202_Building_11";
+            showToast("Файловете са готови в Z:\\206062202_Building_11");
+          }
+        } else {
+          msg.innerText = "✅ Записано в: Z:\\206062202_Building_11";
+          showToast("Файловете са готови за импорт в Z:\\206062202_Building_11");
+        }
+      } catch (e) {
+        msg.innerText = "❌ " + e.message;
+        showToast("Грешка при VM bridge: " + e.message, true);
       }
     }
 

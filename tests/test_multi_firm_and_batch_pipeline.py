@@ -212,3 +212,42 @@ def test_api_batch_transfer_log_and_drop_sync(tmp_path):
     assert sync_resp.status_code == 200
     assert (sync_drop / "TRANSFER.LOG").exists()
     assert (sync_drop / "TRANSFER.ldb").exists()
+
+
+def test_utm_vm_bridge_api(tmp_path):
+    """Test UTM VM Bridge API actions: status, usb-list, stage."""
+    from api_server import app
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app)
+
+    # Status check
+    r1 = client.post("/api/v1/accounting/utm-bridge", json={"action": "status"})
+    assert r1.status_code == 200
+    d1 = r1.json()
+    assert "ok" in d1
+
+    # USB list check
+    r2 = client.post("/api/v1/accounting/utm-bridge", json={"action": "usb-list"})
+    assert r2.status_code == 200
+    d2 = r2.json()
+    assert d2["ok"] is True
+    assert "devices" in d2
+
+    # Stage transfer check
+    stage_drop = tmp_path / "utm_transfer"
+    r3 = client.post(
+        "/api/v1/accounting/utm-bridge",
+        json={
+            "action": "stage",
+            "firm_slug": "Building_11",
+            "firm_eik": "206062202",
+            "drop_dir": str(stage_drop),
+        }
+    )
+    assert r3.status_code == 200
+    d3 = r3.json()
+    assert d3["ok"] is True
+    assert (stage_drop / "206062202_Building_11" / "TRANSFER.LOG").exists()
+    assert (stage_drop / "206062202_Building_11" / "TRANSFER.ldb").exists()
+    assert (stage_drop / "206062202_Building_11" / "meta.json").exists()

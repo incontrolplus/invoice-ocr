@@ -4738,6 +4738,15 @@ class ObsidianSyncRequest(BaseModel):
     document_ids: Optional[list[str]] = Field(default=None, description="Optional document IDs to include")
 
 
+class UtmBridgeRequest(BaseModel):
+    action: str = Field(default="status", description="Action: 'status', 'usb-list', 'usb-connect', 'usb-disconnect', 'stage'")
+    vm_name: str = Field(default="Windows XP", description="Target UTM VM name")
+    device_id: Optional[str] = Field(default="ABCD:1234", description="USB device VID:PID or location")
+    firm_slug: str = Field(default="Building_11", description="Firm folder identifier")
+    firm_eik: str = Field(default="206062202", description="Firm EIK identifier")
+    drop_dir: Optional[str] = Field(default=None, description="Custom drop directory")
+
+
 @app.post(
     "/api/v1/accounting/batch-transfer-log",
     summary="Generate Consolidated Microinvest Delta Pro TRANSFER.LOG for Multiple Invoices",
@@ -5097,6 +5106,48 @@ async def sync_obsidian_dossier(req: ObsidianSyncRequest, db: Session = Depends(
         "client_company": req.client_company_name,
         "period": req.period,
     }
+
+
+@app.post(
+    "/api/v1/accounting/utm-bridge",
+    summary="UTM Windows XP VM Direct Bridge & USB Controller",
+    tags=["Accounting & Delta Pro"],
+)
+async def utm_vm_bridge_endpoint(req: UtmBridgeRequest):
+    from invoice_core.utm_bridge import (
+        get_vm_status,
+        list_usb_devices,
+        connect_usb_to_vm,
+        disconnect_usb_from_vm,
+        stage_firm_transfer_files,
+        DEFAULT_TRANSFER_ROOT,
+    )
+
+    if req.action == "status":
+        return get_vm_status(req.vm_name)
+    elif req.action == "usb-list":
+        return {"ok": True, "devices": list_usb_devices()}
+    elif req.action == "usb-connect":
+        if not req.device_id:
+            raise HTTPException(status_code=400, detail="device_id is required for usb-connect")
+        return connect_usb_to_vm(req.device_id, req.vm_name)
+    elif req.action == "usb-disconnect":
+        if not req.device_id:
+            raise HTTPException(status_code=400, detail="device_id is required for usb-disconnect")
+        return disconnect_usb_from_vm(req.device_id, req.vm_name)
+    elif req.action == "stage":
+        target = Path(req.drop_dir) if req.drop_dir else DEFAULT_TRANSFER_ROOT
+        src = Path("Building_11")
+        if not src.exists():
+            src = Path(".stored_documents/accounting")
+        return stage_firm_transfer_files(
+            source_dir=src,
+            target_drop_dir=target,
+            firm_slug=req.firm_slug,
+            firm_eik=req.firm_eik,
+        )
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown action: {req.action}")
 
 
 @app.get(
