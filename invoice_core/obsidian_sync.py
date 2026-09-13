@@ -16,10 +16,28 @@ from typing import Any, Sequence
 
 logger = logging.getLogger("obsidian_sync")
 
-DEFAULT_VAULT_DIR = Path(os.environ.get(
-    "OBSIDIAN_VAULT_DIR",
-    "/Users/diokarabaz/Documents/Obsidian Vault/Microinvest-Accounting"
-))
+def get_default_vault_dir() -> Path:
+    """Resolve default Obsidian vault directory with container fallback."""
+    env_p = os.environ.get("OBSIDIAN_VAULT_DIR")
+    if env_p:
+        return Path(env_p)
+
+    candidates = [
+        Path("/Users/diokarabaz/Documents/Obsidian Vault/Microinvest-Accounting"),
+        Path("/app/obsidian_vault"),
+        Path("/data/obsidian_vault"),
+        Path("./obsidian_vault"),
+    ]
+    for c in candidates:
+        try:
+            if c.exists():
+                return c
+            # Try to test if parent is accessible
+            if c.parent.exists() and os.access(c.parent, os.W_OK):
+                return c
+        except Exception:
+            continue
+    return Path("./obsidian_vault")
 
 
 def sanitize_filename(name: str) -> str:
@@ -37,8 +55,13 @@ def generate_obsidian_client_dossier(
     vault_dir: Path | None = None,
 ) -> Path:
     """Generate or update structured Obsidian dossier for client invoices and Delta Pro operations."""
-    target_dir = vault_dir or DEFAULT_VAULT_DIR
-    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = vault_dir or get_default_vault_dir()
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError) as ex:
+        logger.warning(f"Could not create vault dir {target_dir}: {ex}. Falling back to container local directory.")
+        target_dir = Path("/data/obsidian_vault") if Path("/data").exists() else Path("./obsidian_vault")
+        target_dir.mkdir(parents=True, exist_ok=True)
 
     safe_client = sanitize_filename(client_name)
     filename = f"Фактури-{safe_client}-{period}.md"

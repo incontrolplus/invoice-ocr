@@ -17,11 +17,13 @@ services:
       - SUPABASE_URL=${SUPABASE_URL:-http://100.83.83.8:8002}
       - SUPABASE_SYNC_ENABLED=true
       - PROJECT_ROOT=/app
+      - OBSIDIAN_VAULT_DIR=/app/obsidian_vault
     volumes:
       - api_data:/data
       - ./Building_11:/app/Building_11
       - ./comparison_export:/app/comparison_export
       - ./config:/app/config
+      - /Users/diokarabaz/Documents/Obsidian Vault/Microinvest-Accounting:/app/obsidian_vault
     depends_on:
       db:
         condition: service_healthy
