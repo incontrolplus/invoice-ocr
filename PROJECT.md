@@ -107,6 +107,7 @@
 | M20 | FastAPI Decomposition & Modular Routers | Decompose monolithic api_server.py (5,285 lines) into 8 modular APIRouters (documents, accounting, contractors, hitl, jobs, ingestion, webhooks, health) | M19 | DONE |
 | M21 | Test Pyramid & Multi-Firm Production Hardening | Categorize 60+ test files into unit/, integration/, adversarial/, and e2e/ tiers; multi-firm tenant isolation and production hardening | M20 | DONE |
 | M22 | Microinvest Ecosystem Full-Stack Integration & Cross-Repo E2E | Connect modular FastAPI core (:8000) with Microinvest Express backend (:3000) and Astro dashboard (:4321); cross-repo E2E contract tests; /api/v1/system/ecosystem-health diagnostics; scripts/start_ecosystem.sh unified runner | M21 | DONE |
+| M23 | Delta Pro Direct Jet 2.0 MDB Auto-Import & Windows VM Automation | End-to-end automation of Microinvest Delta Pro database import; direct MDB table verification (T_OPERACII, T_DOKUMENTI, T_SMETKI); Windows VM hot-folder watcher / automated import runner; Building 11 production batch audit | M22 | PLANNED |
 
 ## Interface Contracts
 
