@@ -446,7 +446,7 @@ async def retry_job_endpoint(job_id: str, background_tasks: BackgroundTasks):
         )
 
     meta = retried_job.get("metadata", {})
-    req_data = meta.get("request_data") or {"input_dir": meta.get("input_dir")}
+    req_data = meta.get("request_data") or meta
     if retried_job.get("request_type") == "batch-dir" and req_data.get("input_dir"):
         background_tasks.add_task(_run_batch_dir_job, job_id, req_data)
 

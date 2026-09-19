@@ -1,7 +1,4 @@
-"""Test helpers, reference oracles, and utilities for Bulgarian invoice OCR test suite.
-
-Re-exports shared fixtures and helpers from tests.fixtures.helpers for backwards compatibility.
-"""
+"""Shared fixtures, synthetic generators, and test helpers for Bulgarian invoice OCR test suite."""
 
 from tests.fixtures.helpers import (
     ACCEPTANCE_DIR,

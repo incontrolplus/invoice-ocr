@@ -104,8 +104,7 @@
 | M17 | Codebase Hygiene & Root Modularization | Move loose PNG screenshots to docs/assets/screenshots/, consolidate utility scripts in scripts/, relocate test runner to tests/test_invoice_ocr.py, update pytest.ini, protect git tree with *_LATEST.LOG | M16 | DONE |
 | M18 | Vendor Profiles & Learning Unification | Unify external YAML configurations into config/vendors/ as Single Source of Truth; disambiguate feedback_learner (Delta Pro) from feedback_learning (HITL RLHF) | M17 | DONE |
 | M19 | Modular Core & Layered Subpackages | Structure invoice_core into clear functional subpackages (ocr/, extraction/, accounting/, verification/, storage/, workers/) preserving 100% backward compatibility via facade shims | M18 | DONE |
-| M20 | FastAPI Decomposition & Modular Routers | Decompose monolithic api_server.py (5,285 lines) into 8 modular APIRouters (documents, accounting, contractors, hitl, jobs, ingestion, webhooks, health) | M19 | DONE |
-| M21 | Test Pyramid & Multi-Firm Production Hardening | Categorize 60+ test files into unit/, integration/, adversarial/, and e2e/ tiers; multi-firm tenant isolation and production hardening | M20 | PLANNED |
+| M21 | Test Pyramid & Multi-Firm Production Hardening | Categorize 60+ test files into unit/, integration/, adversarial/, and e2e/ tiers; multi-firm tenant isolation and production hardening | M20 | DONE |
 
 ## Interface Contracts
 
