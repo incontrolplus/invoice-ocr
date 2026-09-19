@@ -548,11 +548,20 @@ def generate_multi_delta_pro_transfer_log(
         reason = op.get("reason") or "м-ли"
 
         kon_id = start_kon_id + idx
-        int_expense = int(re.sub(r"[^\d]", "", str(op.get("expense_account", "601")))[:3] or 601)
-        int_vat = int(re.sub(r"[^\d]", "", str(op.get("vat_account", "4531")))[:3] or 453)
-        int_counterpart = int(re.sub(r"[^\d]", "", str(op.get("counterpart_account", "401")))[:3] or 401)
         is_purchase = (p.get("direction", "PURCHASE") == "PURCHASE")
         is_pok = 1 if is_purchase else 0
+
+        default_nominal = "601" if is_purchase else "702"
+        nominal_account = op.get("revenue_account" if not is_purchase else "expense_account") or op.get("nominal_account") or default_nominal
+        int_expense = int(re.sub(r"[^\d]", "", str(nominal_account))[:3] or default_nominal)
+
+        default_vat = "4531" if is_purchase else "4532"
+        vat_account = op.get("vat_account") or default_vat
+        int_vat = int(re.sub(r"[^\d]", "", str(vat_account))[:3] or 453)
+
+        default_counterpart = "401" if is_purchase else "411"
+        counterpart_account = op.get("counterpart_account") or default_counterpart
+        int_counterpart = int(re.sub(r"[^\d]", "", str(counterpart_account))[:3] or default_counterpart)
 
         sign = -1.0 if is_cn else 1.0
         total_gross += sign * total_amt

@@ -594,6 +594,7 @@ class InvoiceMetadata:
     correction_reason: str | None = None
     is_credit_note: bool = False
     is_debit_note: bool = False
+    is_annulled: bool = False
     compiled_by: str | None = None   # Съставител / Издал (чл. 6, ал. 1, т. 5 от ЗСч)
     received_by: str | None = None   # Получил / Приел
     currency: str | None = None

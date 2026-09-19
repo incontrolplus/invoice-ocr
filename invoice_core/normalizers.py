@@ -75,8 +75,9 @@ def parse_money(raw: str) -> Decimal | None:
     # Handle Euro glyph artifacts common in Bulgarian invoicing software (e.g. Microinvest Sklad Pro)
     # where the € symbol glyph maps to '6', 'e', 'E', or '€' after 2 decimal digits:
     # e.g. "274,426" -> "274,42", "82.386" -> "82.38", "238,11 6" -> "238,11", "204 746" -> "204.74"
-    cleaned = re.sub(r'(\d+[,.]\d{2})\s*[6eE€]\b', r'\1', cleaned)
-    cleaned = re.sub(r'(\d+)\s+(\d{2})[6eE€]\b', r'\1.\2', cleaned)
+    cleaned = re.sub(r'(\d+[,.]\d{2})\s*[6eE€]\b(?!\d)', r'\1', cleaned)
+    if not re.search(r'[.,]\d{2}', cleaned):
+        cleaned = re.sub(r'(\d+)\s+(\d{2})\s*[6eE€]\b(?!\d)', r'\1.\2', cleaned)
 
     cleaned = re.sub(
         r'(?i)лв\.?|лева|bgn|eur|евро|евроцент\w*|€', '', cleaned,

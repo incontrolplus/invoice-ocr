@@ -995,7 +995,12 @@ def execute_accounting_pipeline_for_document(
             try:
                 co_dir = Path(safe_co)
                 co_dir.mkdir(parents=True, exist_ok=True)
-                (co_dir / "TRANSFER.LOG").write_bytes(log_bytes)
+                dest_file = co_dir / "TRANSFER.LOG"
+                # Protect existing multi-document batch files (> 64KB) from being overwritten by single-doc stream
+                if dest_file.exists() and dest_file.stat().st_size > 65536 and len(log_bytes) <= 65536:
+                    (co_dir / "TRANSFER_LATEST.LOG").write_bytes(log_bytes)
+                else:
+                    dest_file.write_bytes(log_bytes)
                 if ldb_bytes:
                     (co_dir / "TRANSFER.ldb").write_bytes(ldb_bytes)
             except Exception as co_err:

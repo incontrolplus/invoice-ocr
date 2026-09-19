@@ -258,3 +258,92 @@ def test_parse_transfer_log_file_if_available():
         assert len(cn_ops) >= 1
         assert cn_ops[0].document_type_label == "КИ"
         assert cn_ops[0].is_balanced is True
+
+
+def test_sales_invoice_building_11(engine):
+    """Test that when Building 11 is supplier, operation is recorded as Sales (Dt 411 / Kt 702 & Kt 4532)."""
+    inv_data = {
+        "invoice_number": "5000000082",
+        "date_issued": "2026-08-03",
+        "supplier": {
+            "name": "БИЛДИНГ 11 ООД",
+            "eik": "206062202",
+            "vat_number": "BG206062202",
+        },
+        "recipient": {
+            "name": "Деметра 2 ЕООД",
+            "eik": "202409407",
+            "vat_number": "BG202409407",
+        },
+        "subtotal": "28535.13",
+        "taxAmount": "5707.03",
+        "totalAmount": "34242.16",
+        "payment_method": "BANK",
+    }
+    op = engine.create_operation(inv_data, operation_id=101)
+
+    assert op.document_number == "5000000082"
+    assert op.partner_name == "Деметра 2 ЕООД"
+    assert op.partner_eik == "202409407"
+    assert op.partner_vat == "BG202409407"
+    assert op.tax_base == Decimal("28535.13")
+    assert op.vat_amount == Decimal("5707.03")
+    assert op.total_amount == Decimal("34242.16")
+    assert op.is_balanced is True
+
+    # Check journal rows: 2 rows for tax base, 2 rows for VAT
+    # Tax base: Dt 411 (34242.16 total or 28535.13 base), Kt 702 (28535.13)
+    r1_db = [r for r in op.rows if r.line_number == 1 and r.direction == "DEBIT"][0]
+    r1_cr = [r for r in op.rows if r.line_number == 1 and r.direction == "CREDIT"][0]
+    assert r1_db.account == "411"
+    assert r1_db.amount == Decimal("28535.13")
+    assert r1_cr.account == "702"
+    assert r1_cr.amount == Decimal("28535.13")
+
+    # VAT: Dt 411 (5707.03), Kt 4532 (5707.03)
+    r2_db = [r for r in op.rows if r.line_number == 2 and r.direction == "DEBIT"][0]
+    r2_cr = [r for r in op.rows if r.line_number == 2 and r.direction == "CREDIT"][0]
+    assert r2_db.account == "411"
+    assert r2_db.amount == Decimal("5707.03")
+    assert r2_cr.account == "4532"
+    assert r2_cr.amount == Decimal("5707.03")
+
+
+def test_annulled_sales_invoice_building_11(engine):
+    """Test that annulled invoice generates balanced zero-amount journal entry with reason 'Анулирана фактура'."""
+    inv_data = {
+        "invoice_number": "5000000087",
+        "date_issued": "2026-08-24",
+        "is_annulled": True,
+        "supplier": {
+            "name": "БИЛДИНГ 11 ООД",
+            "eik": "206062202",
+            "vat_number": "BG206062202",
+        },
+        "recipient": {
+            "name": "АЯ-ММ ООД",
+            "eik": "201543079",
+            "vat_number": "BG201543079",
+        },
+        "subtotal": "100.00",
+        "taxAmount": "20.00",
+        "totalAmount": "120.00",
+        "payment_method": "BANK",
+    }
+    op = engine.create_operation(inv_data, operation_id=102)
+
+    assert op.document_number == "5000000087"
+    assert op.partner_name == "АЯ-ММ ООД"
+    assert op.tax_base == Decimal("0.00")
+    assert op.vat_amount == Decimal("0.00")
+    assert op.total_amount == Decimal("0.00")
+    assert op.reason == "Анулирана фактура"
+    assert op.is_balanced is True
+
+    # Must contain balanced rows with 0.00
+    assert len(op.rows) == 2
+    assert op.rows[0].amount == Decimal("0.00")
+    assert op.rows[0].account == "411"
+    assert op.rows[1].amount == Decimal("0.00")
+    assert op.rows[1].account == "702"
+

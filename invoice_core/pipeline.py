@@ -507,6 +507,11 @@ def _extract_and_validate_from_tokens(
     invoice.invoice_metadata.due_date = due_date
     invoice.invoice_metadata.place_issued = extract_place_issued(lines)
     invoice.invoice_metadata.ocr_confidence_score = calculate_ocr_confidence(tokens)
+    
+    # Check if document is annulled (анулиран / анулирана)
+    all_text_lower = " ".join(getattr(t, "text_lower", str(t.text).lower()) for t in tokens)
+    if "анулиран" in all_text_lower:
+        invoice.invoice_metadata.is_annulled = True
 
     # Parties
     invoice.supplier = extract_party(lines, tokens, "supplier")

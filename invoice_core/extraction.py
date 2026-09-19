@@ -318,10 +318,9 @@ def extract_invoice_number(
     # --- Pass 0: Targeted check for Detelina 100099XXXX invoices ---
     all_lines_text = " ".join(l.text for l in lines)
     is_detelina_doc = (
-        "114609507" in all_lines_text or "114609407" in all_lines_text or "ДЕТЕЛИНА" in all_lines_text.upper()
-        or "ГЕОРГИ КОЧЕВ" in all_lines_text.upper() or "ГЕОРГИ КОЧЕ" in all_lines_text.upper()
-        or ("ДЕТЕЛ" in all_lines_text.upper() and "ПЛЕВЕН" in all_lines_text.upper())
-        or any("100099" in (t.text or "") for t in tokens)
+        ("114609507" in all_lines_text or "114609407" in all_lines_text or "ДЕТЕЛИНА" in all_lines_text.upper())
+        and ("ДЕТЕЛ" in all_lines_text.upper() or any("100099" in (t.text or "") for t in tokens))
+        and "206062202" not in all_lines_text
     )
     if is_detelina_doc:
         for l in page1_lines:
@@ -1227,10 +1226,9 @@ def extract_party(
 
     # Detelina-DP specialized party extraction
     is_detelina_party = (
-        is_dot_matrix_vendor(all_text)
-        or "ГЕОРГИ КОЧЕВ" in all_upper or "ГЕОРГИ КОЧЕ" in all_upper
-        or ("ДЕТЕЛ" in all_upper and "ПЛЕВЕН" in all_upper)
-        or any("100099" in (t.text or "") for t in tokens)
+        ("114609507" in all_text or "114609407" in all_text or "ДЕТЕЛИНА" in all_upper)
+        and ("ДЕТЕЛ" in all_upper or any("100099" in (t.text or "") for t in tokens) or is_dot_matrix_vendor(all_text))
+        and "206062202" not in all_text
     )
     if is_detelina_party:
         if role == "supplier":

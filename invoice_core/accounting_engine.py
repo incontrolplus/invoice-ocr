@@ -207,6 +207,8 @@ class AccountingEngine:
         ACCT_SUPPLIERS: "Доставчици",
         ACCT_CLIENTS: "Клиенти",
         ACCT_SALES_REVENUE: "Приходи от продажба на стоки",
+        "701": "Приходи от продажба на продукция",
+        "703": "Приходи от услуги",
     }
 
     # Deterministic supplier mappings from Secret Legend & Majestic Smoke historical ledgers
@@ -257,8 +259,15 @@ class AccountingEngine:
         "114672009": {"account": ACCT_MATERIALS, "reason": "м-ли и транспорт", "name": "АЛФА МИКС ООД"},
     }
 
-    def __init__(self, mapping_engine: AccountMappingEngine | None = None) -> None:
+    def __init__(
+        self,
+        mapping_engine: AccountMappingEngine | None = None,
+        client_eik: str = "206062202",
+        client_name: str = "БИЛДИНГ 11 ООД",
+    ) -> None:
         self.mapping_engine = mapping_engine or DEFAULT_MAPPING_ENGINE
+        self.client_eik = str(client_eik or "206062202").strip()
+        self.client_name = str(client_name or "БИЛДИНГ 11 ООД").strip()
 
     def resolve_expense_account(
         self,
@@ -379,8 +388,45 @@ class AccountingEngine:
 
         # Resolve accounts
         expense_acct, reason_desc = self.resolve_expense_account(sup_eik, items)
-        pay_type = self.resolve_payment_method(pay_method)
+        pay_details = getattr(invoice, "payment_details", None) if not isinstance(invoice, dict) else invoice.get("payment_details")
+        pay_type = self.resolve_payment_method(pay_method, pay_details)
         counterpart_acct = ACCT_CASH_BGN if pay_type == "CASH" else ACCT_SUPPLIERS
+
+        # Determine direction: Is Building 11 the supplier?
+        meta_obj = getattr(invoice, "invoice_metadata", None)
+        is_annulled = getattr(meta_obj, "is_annulled", False) if meta_obj else bool(invoice.get("is_annulled") if isinstance(invoice, dict) else False)
+        
+        target_eik = getattr(self, "client_eik", "206062202")
+        target_name = getattr(self, "client_name", "билдинг 11")
+        is_sales = (
+            sup_eik == target_eik
+            or "206062202" in sup_eik
+            or "билдинг 11" in sup_name.lower()
+            or (target_name and target_name.lower() in sup_name.lower())
+        )
+        is_purchase = not is_sales
+
+        if is_sales:
+            # For sales invoices, counterpart in VAT sales ledger is the recipient (Client)
+            if isinstance(invoice, dict):
+                rec = invoice.get("recipient") or {}
+                partner_name = str(rec.get("name") or "").strip()
+                partner_eik = str(rec.get("eik") or "").strip()
+                partner_vat = str(rec.get("vat_number") or f"BG{partner_eik}").strip()
+            else:
+                partner_name = str(invoice.recipient.name or "").strip()
+                partner_eik = str(invoice.recipient.eik or "").strip()
+                partner_vat = str(invoice.recipient.vat_number or f"BG{partner_eik}").strip()
+        else:
+            partner_name = sup_name
+            partner_eik = sup_eik
+            partner_vat = sup_vat
+
+        if is_annulled:
+            tax_base = Decimal("0.00")
+            vat_amount = Decimal("0.00")
+            total_amount = Decimal("0.00")
+            reason_desc = "Анулирана фактура"
 
         op = AccountingOperation(
             operation_id=operation_id,
@@ -389,9 +435,9 @@ class AccountingEngine:
             document_number=inv_no,
             document_date=inv_dt,
             accounting_date=act_dt,
-            partner_name=sup_name,
-            partner_eik=sup_eik,
-            partner_vat=sup_vat,
+            partner_name=partner_name,
+            partner_eik=partner_eik,
+            partner_vat=partner_vat,
             tax_base=tax_base,
             vat_amount=vat_amount,
             total_amount=total_amount,
@@ -403,109 +449,251 @@ class AccountingEngine:
         rows: list[JournalEntryRow] = []
         line_idx = 1
 
-        # 1. Tax Base Line (Expense / Merchandise)
-        if tax_base > 0:
-            debit_amt = -tax_base if is_credit else tax_base
-            credit_amt = tax_base if is_credit else -tax_base
+        if is_sales:
+            client_acct = ACCT_CASH_BGN if pay_type == "CASH" else ACCT_CLIENTS
+            revenue_acct = ACCT_SALES_REVENUE
+            vat_sales_acct = ACCT_VAT_SALES
 
-            # Credit entry for Counterpart
-            rows.append(JournalEntryRow(
-                operation_id=operation_id,
-                line_number=line_idx,
-                direction="CREDIT",
-                is_kredit=DELTA_PRO_CREDIT,
-                account=counterpart_acct,
-                subaccount="0",
-                amount=credit_amt,
-                account_name=self.ACCOUNT_NAMES.get(counterpart_acct, "Каса/Доставчици"),
-                document_type=doc_code,
-                document_type_label=doc_label,
-                document_number=inv_no,
-                document_date=inv_dt,
-                accounting_date=act_dt,
-                partner_name=sup_name,
-                partner_eik=sup_eik,
-                partner_vat=sup_vat,
-                reason=reason_desc,
-                is_vat_row=False,
-                is_purchase=True,
-            ))
+            if is_annulled:
+                # Single balanced zero-amount row so the annulled number is tracked in the sales register
+                rows.append(JournalEntryRow(
+                    operation_id=operation_id,
+                    line_number=1,
+                    direction="DEBIT",
+                    is_kredit=DELTA_PRO_DEBIT,
+                    account=client_acct,
+                    subaccount="0",
+                    amount=Decimal("0.00"),
+                    account_name=self.ACCOUNT_NAMES.get(client_acct, "Клиенти"),
+                    document_type=doc_code,
+                    document_type_label=doc_label,
+                    document_number=inv_no,
+                    document_date=inv_dt,
+                    accounting_date=act_dt,
+                    partner_name=partner_name,
+                    partner_eik=partner_eik,
+                    partner_vat=partner_vat,
+                    reason="Анулирана фактура",
+                    is_vat_row=False,
+                    is_purchase=False,
+                ))
+                rows.append(JournalEntryRow(
+                    operation_id=operation_id,
+                    line_number=1,
+                    direction="CREDIT",
+                    is_kredit=DELTA_PRO_CREDIT,
+                    account=revenue_acct,
+                    subaccount="0",
+                    amount=Decimal("0.00"),
+                    account_name=self.ACCOUNT_NAMES.get(revenue_acct, "Приходи от продажби"),
+                    document_type=doc_code,
+                    document_type_label=doc_label,
+                    document_number=inv_no,
+                    document_date=inv_dt,
+                    accounting_date=act_dt,
+                    partner_name=partner_name,
+                    partner_eik=partner_eik,
+                    partner_vat=partner_vat,
+                    reason="Анулирана фактура",
+                    is_vat_row=False,
+                    is_purchase=False,
+                ))
+            else:
+                # 1. Tax Base Line (Sales Revenue)
+                if tax_base > 0:
+                    rows.append(JournalEntryRow(
+                        operation_id=operation_id,
+                        line_number=line_idx,
+                        direction="DEBIT",
+                        is_kredit=DELTA_PRO_DEBIT,
+                        account=client_acct,
+                        subaccount="0",
+                        amount=tax_base,
+                        account_name=self.ACCOUNT_NAMES.get(client_acct, "Клиенти"),
+                        document_type=doc_code,
+                        document_type_label=doc_label,
+                        document_number=inv_no,
+                        document_date=inv_dt,
+                        accounting_date=act_dt,
+                        partner_name=partner_name,
+                        partner_eik=partner_eik,
+                        partner_vat=partner_vat,
+                        reason=reason_desc,
+                        is_vat_row=False,
+                        is_purchase=False,
+                    ))
+                    rows.append(JournalEntryRow(
+                        operation_id=operation_id,
+                        line_number=line_idx,
+                        direction="CREDIT",
+                        is_kredit=DELTA_PRO_CREDIT,
+                        account=revenue_acct,
+                        subaccount="0",
+                        amount=tax_base,
+                        account_name=self.ACCOUNT_NAMES.get(revenue_acct, "Приходи от продажби"),
+                        document_type=doc_code,
+                        document_type_label=doc_label,
+                        document_number=inv_no,
+                        document_date=inv_dt,
+                        accounting_date=act_dt,
+                        partner_name=partner_name,
+                        partner_eik=partner_eik,
+                        partner_vat=partner_vat,
+                        reason=reason_desc,
+                        is_vat_row=False,
+                        is_purchase=False,
+                    ))
+                    line_idx += 1
 
-            # Debit entry for Expense / Goods
-            rows.append(JournalEntryRow(
-                operation_id=operation_id,
-                line_number=line_idx,
-                direction="DEBIT",
-                is_kredit=DELTA_PRO_DEBIT,
-                account=expense_acct,
-                subaccount="0",
-                amount=debit_amt,
-                account_name=self.ACCOUNT_NAMES.get(expense_acct, "Стоки/Разходи"),
-                document_type=doc_code,
-                document_type_label=doc_label,
-                document_number=inv_no,
-                document_date=inv_dt,
-                accounting_date=act_dt,
-                partner_name=sup_name,
-                partner_eik=sup_eik,
-                partner_vat=sup_vat,
-                reason=reason_desc,
-                is_vat_row=False,
-                is_purchase=True,
-            ))
-            line_idx += 1
+                # 2. VAT Line (Sales VAT 453.2)
+                if vat_amount > 0:
+                    rows.append(JournalEntryRow(
+                        operation_id=operation_id,
+                        line_number=line_idx,
+                        direction="DEBIT",
+                        is_kredit=DELTA_PRO_DEBIT,
+                        account=client_acct,
+                        subaccount="0",
+                        amount=vat_amount,
+                        account_name=self.ACCOUNT_NAMES.get(client_acct, "Клиенти"),
+                        document_type=doc_code,
+                        document_type_label=doc_label,
+                        document_number=inv_no,
+                        document_date=inv_dt,
+                        accounting_date=act_dt,
+                        partner_name=partner_name,
+                        partner_eik=partner_eik,
+                        partner_vat=partner_vat,
+                        reason=reason_desc,
+                        is_vat_row=True,
+                        is_purchase=False,
+                    ))
+                    rows.append(JournalEntryRow(
+                        operation_id=operation_id,
+                        line_number=line_idx,
+                        direction="CREDIT",
+                        is_kredit=DELTA_PRO_CREDIT,
+                        account=vat_sales_acct,
+                        subaccount="2.0",
+                        amount=vat_amount,
+                        account_name=self.ACCOUNT_NAMES.get(vat_sales_acct, "Данък върху продажбите"),
+                        document_type=doc_code,
+                        document_type_label=doc_label,
+                        document_number=inv_no,
+                        document_date=inv_dt,
+                        accounting_date=act_dt,
+                        partner_name=partner_name,
+                        partner_eik=partner_eik,
+                        partner_vat=partner_vat,
+                        reason=reason_desc,
+                        is_vat_row=True,
+                        is_purchase=False,
+                    ))
+                    line_idx += 1
+        else:
+            # 1. Tax Base Line (Expense / Merchandise Purchases)
+            if tax_base > 0:
+                debit_amt = -tax_base if is_credit else tax_base
+                credit_amt = tax_base if is_credit else -tax_base
 
-        # 2. VAT Line (4531 - Начислен данък за покупките)
-        if vat_amount > 0:
-            vat_debit = -vat_amount if is_credit else vat_amount
-            vat_credit = vat_amount if is_credit else -vat_amount
+                # Credit entry for Counterpart
+                rows.append(JournalEntryRow(
+                    operation_id=operation_id,
+                    line_number=line_idx,
+                    direction="CREDIT",
+                    is_kredit=DELTA_PRO_CREDIT,
+                    account=counterpart_acct,
+                    subaccount="0",
+                    amount=credit_amt,
+                    account_name=self.ACCOUNT_NAMES.get(counterpart_acct, "Каса/Доставчици"),
+                    document_type=doc_code,
+                    document_type_label=doc_label,
+                    document_number=inv_no,
+                    document_date=inv_dt,
+                    accounting_date=act_dt,
+                    partner_name=partner_name,
+                    partner_eik=partner_eik,
+                    partner_vat=partner_vat,
+                    reason=reason_desc,
+                    is_vat_row=False,
+                    is_purchase=True,
+                ))
 
-            # Credit entry for Counterpart
-            rows.append(JournalEntryRow(
-                operation_id=operation_id,
-                line_number=line_idx,
-                direction="CREDIT",
-                is_kredit=DELTA_PRO_CREDIT,
-                account=counterpart_acct,
-                subaccount="0",
-                amount=vat_credit,
-                account_name=self.ACCOUNT_NAMES.get(counterpart_acct, "Каса/Доставчици"),
-                document_type=doc_code,
-                document_type_label=doc_label,
-                document_number=inv_no,
-                document_date=inv_dt,
-                accounting_date=act_dt,
-                partner_name=sup_name,
-                partner_eik=sup_eik,
-                partner_vat=sup_vat,
-                reason=reason_desc,
-                is_vat_row=True,
-                is_purchase=True,
-            ))
+                # Debit entry for Expense / Goods
+                rows.append(JournalEntryRow(
+                    operation_id=operation_id,
+                    line_number=line_idx,
+                    direction="DEBIT",
+                    is_kredit=DELTA_PRO_DEBIT,
+                    account=expense_acct,
+                    subaccount="0",
+                    amount=debit_amt,
+                    account_name=self.ACCOUNT_NAMES.get(expense_acct, "Стоки/Разходи"),
+                    document_type=doc_code,
+                    document_type_label=doc_label,
+                    document_number=inv_no,
+                    document_date=inv_dt,
+                    accounting_date=act_dt,
+                    partner_name=partner_name,
+                    partner_eik=partner_eik,
+                    partner_vat=partner_vat,
+                    reason=reason_desc,
+                    is_vat_row=False,
+                    is_purchase=True,
+                ))
+                line_idx += 1
 
-            # Debit entry for VAT Purchases (453.1)
-            rows.append(JournalEntryRow(
-                operation_id=operation_id,
-                line_number=line_idx,
-                direction="DEBIT",
-                is_kredit=DELTA_PRO_DEBIT,
-                account=ACCT_VAT_PURCHASES,
-                subaccount="1.0",
-                amount=vat_debit,
-                account_name=self.ACCOUNT_NAMES.get(ACCT_VAT_PURCHASES, "Данък върху покупките"),
-                document_type=doc_code,
-                document_type_label=doc_label,
-                document_number=inv_no,
-                document_date=inv_dt,
-                accounting_date=act_dt,
-                partner_name=sup_name,
-                partner_eik=sup_eik,
-                partner_vat=sup_vat,
-                reason=reason_desc,
-                is_vat_row=True,
-                is_purchase=True,
-            ))
-            line_idx += 1
+            # 2. VAT Line (4531 - Начислен данък за покупките)
+            if vat_amount > 0:
+                vat_debit = -vat_amount if is_credit else vat_amount
+                vat_credit = vat_amount if is_credit else -vat_amount
+
+                # Credit entry for Counterpart
+                rows.append(JournalEntryRow(
+                    operation_id=operation_id,
+                    line_number=line_idx,
+                    direction="CREDIT",
+                    is_kredit=DELTA_PRO_CREDIT,
+                    account=counterpart_acct,
+                    subaccount="0",
+                    amount=vat_credit,
+                    account_name=self.ACCOUNT_NAMES.get(counterpart_acct, "Каса/Доставчици"),
+                    document_type=doc_code,
+                    document_type_label=doc_label,
+                    document_number=inv_no,
+                    document_date=inv_dt,
+                    accounting_date=act_dt,
+                    partner_name=partner_name,
+                    partner_eik=partner_eik,
+                    partner_vat=partner_vat,
+                    reason=reason_desc,
+                    is_vat_row=True,
+                    is_purchase=True,
+                ))
+
+                # Debit entry for VAT Purchases (453.1)
+                rows.append(JournalEntryRow(
+                    operation_id=operation_id,
+                    line_number=line_idx,
+                    direction="DEBIT",
+                    is_kredit=DELTA_PRO_DEBIT,
+                    account=ACCT_VAT_PURCHASES,
+                    subaccount="1.0",
+                    amount=vat_debit,
+                    account_name=self.ACCOUNT_NAMES.get(ACCT_VAT_PURCHASES, "Данък върху покупките"),
+                    document_type=doc_code,
+                    document_type_label=doc_label,
+                    document_number=inv_no,
+                    document_date=inv_dt,
+                    accounting_date=act_dt,
+                    partner_name=partner_name,
+                    partner_eik=partner_eik,
+                    partner_vat=partner_vat,
+                    reason=reason_desc,
+                    is_vat_row=True,
+                    is_purchase=True,
+                ))
+                line_idx += 1
 
         op.rows = rows
         return op

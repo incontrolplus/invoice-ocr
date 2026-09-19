@@ -216,7 +216,7 @@ def parse_bg_amount_in_words(text: str) -> Decimal | None:
         total += current
         return total if total > 0 else None
 
-    # Try to extract pattern: <words> лв. и <digits> ст./цент/ценг
+    # Try to extract pattern 1: <words> лв./евро и <digits> ст./цент/ценг
     m = re.search(
         r'([\wа-яА-Я\s]+?)(?:лв\.?|лева|bgn|eur|евро)\s*(?:[имо\s]*)?(\d{1,2})\s*(?:ст\.?|стотинки?|цент[ажд]?|ценгж)',
         s, re.IGNORECASE,
@@ -229,14 +229,27 @@ def parse_bg_amount_in_words(text: str) -> Decimal | None:
         if leva is not None and leva > 0:
             return Decimal(f"{leva}.{stotinki:02d}")
 
-    # Try pattern without explicit stotinki: <words> лв.
-    m2 = re.search(r'([\wа-яА-Я\s]+?)(?:лв\.?|лева)', s, re.IGNORECASE)
+    # Try pattern 2: <words> лв./евро и <words> ст./цент (e.g. Четиристотин осемдесет и осем евро и тридесет цента)
+    m_words_cents = re.search(
+        r'([\wа-яА-Я\s]+?)(?:лв\.?|лева|bgn|eur|евро)\s*(?:[имо\s]+)?([\wа-яА-Я\s]+?)\s*(?:ст\.?|стотинки?|цент[ажд]?|ценгж)',
+        s, re.IGNORECASE,
+    )
+    if m_words_cents:
+        word_part = m_words_cents.group(1).strip()
+        cent_part = m_words_cents.group(2).strip()
+        leva = _parse_words_to_int(re.split(r'\s+', word_part))
+        stotinki = _parse_words_to_int(re.split(r'\s+', cent_part))
+        if leva is not None and leva > 0 and stotinki is not None and 0 <= stotinki < 100:
+            return Decimal(f"{leva}.{stotinki:02d}")
+
+    # Try pattern 3: <words> лв./евро (whole amounts, no cents)
+    m2 = re.search(r'([\wа-яА-Я\s]+?)(?:лв\.?|лева|bgn|eur|евро)', s, re.IGNORECASE)
     if m2:
         word_part = m2.group(1).strip()
         words = re.split(r'\s+', word_part)
         leva = _parse_words_to_int(words)
         if leva is not None and leva > 0:
-            return Decimal(str(leva))
+            return Decimal(f"{leva}.00")
 
     return None
 
@@ -261,10 +274,9 @@ def extract_financial_summary(
 
     # Specialized totals for Detelina-DP dot-matrix invoices
     is_detelina_fin = (
-        is_dot_matrix_vendor(all_lines_text)
-        or "ГЕОРГИ КОЧЕВ" in all_lines_upper or "ГЕОРГИ КОЧЕ" in all_lines_upper
-        or ("ДЕТЕЛ" in all_lines_upper and "ПЛЕВЕН" in all_lines_upper)
-        or any("100099" in (t.text or "") for t in tokens)
+        ("114609507" in all_lines_text or "114609407" in all_lines_text or "ДЕТЕЛИНА" in all_lines_upper)
+        and ("ДЕТЕЛ" in all_lines_upper or any("100099" in (t.text or "") for t in tokens) or is_dot_matrix_vendor(all_lines_text))
+        and "206062202" not in all_lines_text
     )
     if is_detelina_fin:
         det_tb = None
@@ -438,10 +450,25 @@ def extract_financial_summary(
         Filters out implausibly large values (> 500k) which are likely
         identifiers (EIK, account numbers) misinterpreted as amounts.
         Prefers values with explicit 2-decimal digits over bare integers.
+        Handles European/Bulgarian space-separated thousands (e.g. '30 000.00', '34 242.16').
         """
         MAX_PLAUSIBLE = Decimal("500000")  # 500 thousand
+        line_txt = line.text or ""
+
+        # First pass: search line.text for 2-decimal numbers with optional space/dot thousands grouping
+        matches = list(re.finditer(
+            r'(?<!\d)(?:(?:\d{1,3}(?:[ \u00A0]\d{3})+|\d+)[.,]\d{2})(?:\s*[6eE€])?(?!\d|[.,])',
+            line_txt
+        ))
+        if matches:
+            for m in reversed(matches):
+                raw = m.group(0).strip()
+                val = parse_money(raw)
+                if val is not None and abs(val) <= MAX_PLAUSIBLE:
+                    return val
+
         sorted_tokens = sorted(line.tokens, key=lambda tok: tok.center_x, reverse=True)
-        # First pass: prefer tokens with explicit 2-decimal digits
+        # Second pass: prefer tokens with explicit 2-decimal digits
         for token in sorted_tokens:
             raw = token.text.strip()
             if not raw or raw.lower() in CURRENCY_GLYPHS:
@@ -452,7 +479,20 @@ def extract_financial_summary(
                 val = parse_money(raw)
                 if val is not None and abs(val) <= MAX_PLAUSIBLE:
                     return val
-        # Second pass: fallback to any valid monetary value
+
+        # Third pass: search line.text for integers (1 to 7 digits, e.g. '30 000')
+        matches_int = list(re.finditer(
+            r'(?<!\d)(?:(?:\d{1,3}(?:[ \u00A0]\d{3})+|\d{1,7}))(?:\s*[6eE€])?(?!\d|[.,])',
+            line_txt
+        ))
+        if matches_int:
+            for m in reversed(matches_int):
+                raw = m.group(0).strip()
+                val = parse_money(raw)
+                if val is not None and abs(val) <= MAX_PLAUSIBLE:
+                    return val
+
+        # Fourth pass: fallback to any valid monetary value on single tokens
         for token in sorted_tokens:
             raw = token.text.strip()
             if not raw or raw.lower() in CURRENCY_GLYPHS:
