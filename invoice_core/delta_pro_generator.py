@@ -232,6 +232,226 @@ def get_template_database() -> bytes:
     raise FileNotFoundError("Canonical 65536-byte Delta Pro template not found.")
 
 
+def acct_title(code: str) -> str:
+    code_str = str(code).split(".")[0]
+    mapping = {
+        "401": "Доставчици",
+        "411": "Клиенти",
+        "501": "Каса в левове",
+        "503": "Разплащателна сметка",
+        "601": "Разходи за материали",
+        "602": "Разходи за външни услуги",
+        "304": "Стоки",
+        "609": "Други разходи",
+        "4531": "Данък върху  покупките",
+        "4532": "Данък върху продажбите",
+        "453": "Данък върху  покупките",
+        "701": "Приходи от продажба на продукция",
+        "702": "Приходи от продажба на стоки",
+        "703": "Приходи от услуги",
+    }
+    return mapping.get(code_str, "Сметка")
+
+
+def build_invoice_transfer_records(
+    kon_id: int,
+    invoice_number: str,
+    doc_date_ole: float,
+    doc_date_disp: str,
+    doc_type: str,
+    company_name: str,
+    bulstat: str,
+    dan_no: str,
+    is_purchase: bool,
+    is_credit_note: bool,
+    int_counterpart: int,
+    int_vat: int,
+    vat_amount: float,
+    tax_base: float,
+    default_nominal: str,
+    nominal_account: str,
+    reason: str,
+    distributions: Sequence[dict[str, Any]] | None = None,
+) -> list[bytes]:
+    """Build all double-entry W#Transfer binary records for a single invoice.
+    
+    Supports multi-account distributions (e.g. materials + transport or mixed items)
+    with sequential kon index per distribution, followed by the VAT record.
+    """
+    records: list[bytes] = []
+    is_pok = 1 if is_purchase else 0
+
+    if distributions:
+        for dist_idx, dist in enumerate(distributions, start=1):
+            dist_amt = float(dist.get("amount", 0.0))
+            dist_acct_raw = str(dist.get("account") or nominal_account)
+            dist_int_acct = int(re.sub(r"[^\d]", "", dist_acct_raw)[:3] or default_nominal)
+            dist_sub_acct = float(dist.get("subaccount", 0.0) or 0.0)
+            dist_desc = str(dist.get("description") or dist.get("reason") or reason)[:40]
+            dist_name = dist.get("account_name") or acct_title(str(dist_int_acct))
+
+            if is_purchase:
+                if is_credit_note:
+                    r0 = build_w_transfer_record(
+                        kon_id=kon_id, kon=dist_idx, is_kredit=1, acct=int_counterpart, sub_acct=0.0,
+                        amount=abs(dist_amt), date_ole=doc_date_ole, is_dds=0,
+                        acct_name=acct_title(str(int_counterpart)), fak_no=invoice_number,
+                        doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                        bulstat=bulstat, dan_no=dan_no, osnovanie=dist_desc, is_pokupka=is_pok
+                    )
+                    r1 = build_w_transfer_record(
+                        kon_id=kon_id, kon=dist_idx, is_kredit=2, acct=dist_int_acct, sub_acct=dist_sub_acct,
+                        amount=-abs(dist_amt), date_ole=doc_date_ole, is_dds=0,
+                        acct_name=dist_name, fak_no=invoice_number,
+                        doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                        bulstat=bulstat, dan_no=dan_no, osnovanie=dist_desc, is_pokupka=is_pok
+                    )
+                    records.extend([r0, r1])
+                else:
+                    r0 = build_w_transfer_record(
+                        kon_id=kon_id, kon=dist_idx, is_kredit=1, acct=int_counterpart, sub_acct=0.0,
+                        amount=-abs(dist_amt), date_ole=doc_date_ole, is_dds=0,
+                        acct_name=acct_title(str(int_counterpart)), fak_no=invoice_number,
+                        doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                        bulstat=bulstat, dan_no=dan_no, osnovanie=dist_desc, is_pokupka=is_pok
+                    )
+                    r1 = build_w_transfer_record(
+                        kon_id=kon_id, kon=dist_idx, is_kredit=2, acct=dist_int_acct, sub_acct=dist_sub_acct,
+                        amount=abs(dist_amt), date_ole=doc_date_ole, is_dds=0,
+                        acct_name=dist_name, fak_no=invoice_number,
+                        doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                        bulstat=bulstat, dan_no=dan_no, osnovanie=dist_desc, is_pokupka=is_pok
+                    )
+                    records.extend([r0, r1])
+            else:
+                int_client = int_counterpart if int_counterpart == 501 else 411
+                r0 = build_w_transfer_record(
+                    kon_id=kon_id, kon=dist_idx, is_kredit=2, acct=int_client, sub_acct=0.0,
+                    amount=abs(dist_amt), date_ole=doc_date_ole, is_dds=0,
+                    acct_name=acct_title(str(int_client)), fak_no=invoice_number,
+                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                    bulstat=bulstat, dan_no=dan_no, osnovanie=dist_desc, is_pokupka=is_pok
+                )
+                r1 = build_w_transfer_record(
+                    kon_id=kon_id, kon=dist_idx, is_kredit=1, acct=dist_int_acct, sub_acct=dist_sub_acct,
+                    amount=abs(dist_amt), date_ole=doc_date_ole, is_dds=0,
+                    acct_name=dist_name, fak_no=invoice_number,
+                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                    bulstat=bulstat, dan_no=dan_no, osnovanie=dist_desc, is_pokupka=is_pok
+                )
+                records.extend([r0, r1])
+
+        vat_kon = len(distributions) + 1
+    else:
+        # Single account
+        int_expense = int(re.sub(r"[^\d]", "", str(nominal_account))[:3] or default_nominal)
+        if is_purchase:
+            if is_credit_note:
+                r0 = build_w_transfer_record(
+                    kon_id=kon_id, kon=1, is_kredit=1, acct=int_counterpart, sub_acct=0.0,
+                    amount=abs(tax_base), date_ole=doc_date_ole, is_dds=0,
+                    acct_name=acct_title(str(int_counterpart)), fak_no=invoice_number,
+                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                    bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
+                )
+                r1 = build_w_transfer_record(
+                    kon_id=kon_id, kon=1, is_kredit=2, acct=int_expense, sub_acct=0.0,
+                    amount=-abs(tax_base), date_ole=doc_date_ole, is_dds=0,
+                    acct_name=acct_title(str(int_expense)), fak_no=invoice_number,
+                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                    bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
+                )
+                records.extend([r0, r1])
+            else:
+                r0 = build_w_transfer_record(
+                    kon_id=kon_id, kon=1, is_kredit=1, acct=int_counterpart, sub_acct=0.0,
+                    amount=-abs(tax_base), date_ole=doc_date_ole, is_dds=0,
+                    acct_name=acct_title(str(int_counterpart)), fak_no=invoice_number,
+                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                    bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
+                )
+                r1 = build_w_transfer_record(
+                    kon_id=kon_id, kon=1, is_kredit=2, acct=int_expense, sub_acct=0.0,
+                    amount=abs(tax_base), date_ole=doc_date_ole, is_dds=0,
+                    acct_name=acct_title(str(int_expense)), fak_no=invoice_number,
+                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                    bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
+                )
+                records.extend([r0, r1])
+        else:
+            int_client = int_counterpart if int_counterpart == 501 else 411
+            r0 = build_w_transfer_record(
+                kon_id=kon_id, kon=1, is_kredit=2, acct=int_client, sub_acct=0.0,
+                amount=abs(tax_base), date_ole=doc_date_ole, is_dds=0,
+                acct_name=acct_title(str(int_client)), fak_no=invoice_number,
+                doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
+            )
+            r1 = build_w_transfer_record(
+                kon_id=kon_id, kon=1, is_kredit=1, acct=int_expense, sub_acct=0.0,
+                amount=abs(tax_base), date_ole=doc_date_ole, is_dds=0,
+                acct_name=acct_title(str(int_expense)), fak_no=invoice_number,
+                doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
+            )
+            records.extend([r0, r1])
+        vat_kon = 2
+
+    # VAT Line
+    if vat_amount != 0.0:
+        if is_purchase:
+            sub_vat = 1.0
+            if is_credit_note:
+                r2 = build_w_transfer_record(
+                    kon_id=kon_id, kon=vat_kon, is_kredit=1, acct=int_counterpart, sub_acct=0.0,
+                    amount=abs(vat_amount), date_ole=doc_date_ole, is_dds=1,
+                    acct_name=acct_title(str(int_counterpart)), fak_no=invoice_number,
+                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                    bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
+                )
+                r3 = build_w_transfer_record(
+                    kon_id=kon_id, kon=vat_kon, is_kredit=2, acct=int_vat, sub_acct=sub_vat,
+                    amount=-abs(vat_amount), date_ole=doc_date_ole, is_dds=1,
+                    acct_name=acct_title(str(int_vat)), fak_no=invoice_number,
+                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                    bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
+                )
+            else:
+                r2 = build_w_transfer_record(
+                    kon_id=kon_id, kon=vat_kon, is_kredit=1, acct=int_counterpart, sub_acct=0.0,
+                    amount=-abs(vat_amount), date_ole=doc_date_ole, is_dds=1,
+                    acct_name=acct_title(str(int_counterpart)), fak_no=invoice_number,
+                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                    bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
+                )
+                r3 = build_w_transfer_record(
+                    kon_id=kon_id, kon=vat_kon, is_kredit=2, acct=int_vat, sub_acct=sub_vat,
+                    amount=abs(vat_amount), date_ole=doc_date_ole, is_dds=1,
+                    acct_name=acct_title(str(int_vat)), fak_no=invoice_number,
+                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                    bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
+                )
+        else:
+            int_client = int_counterpart if int_counterpart == 501 else 411
+            r2 = build_w_transfer_record(
+                kon_id=kon_id, kon=vat_kon, is_kredit=2, acct=int_client, sub_acct=0.0,
+                amount=abs(vat_amount), date_ole=doc_date_ole, is_dds=1,
+                acct_name=acct_title(str(int_client)), fak_no=invoice_number,
+                doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
+            )
+            r3 = build_w_transfer_record(
+                kon_id=kon_id, kon=vat_kon, is_kredit=1, acct=int_vat, sub_acct=2.0,
+                amount=abs(vat_amount), date_ole=doc_date_ole, is_dds=1,
+                acct_name=acct_title(str(int_vat)), fak_no=invoice_number,
+                doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
+                bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
+            )
+        records.extend([r2, r3])
+
+    return records
+
+
 def generate_delta_pro_transfer_log(
     invoice_number: str,
     doc_date: str,
@@ -250,6 +470,7 @@ def generate_delta_pro_transfer_log(
     reason: str = "м-ли",
     client_company_name: str = "БИЛДИНГ 11 ООД",
     kon_id: int = 1061,
+    distributions: Sequence[dict[str, Any]] | None = None,
 ) -> tuple[bytes, bytes]:
     """Generate byte-perfect TRANSFER.LOG and TRANSFER.ldb for Microinvest Delta Pro.
     
@@ -289,142 +510,30 @@ def generate_delta_pro_transfer_log(
     db[24*PAGE_SIZE : 25*PAGE_SIZE] = p24_new
 
     # 2. Build W#Transfer records
-    records: list[bytes] = []
-
-    # Helper account name resolver
-    def acct_title(code: str) -> str:
-        code_str = str(code).split(".")[0]
-        mapping = {
-            "401": "Доставчици",
-            "411": "Клиенти",
-            "501": "Каса в левове",
-            "503": "Разплащателна сметка",
-            "601": "Разходи за материали",
-            "602": "Разходи за външни услуги",
-            "304": "Стоки",
-            "609": "Други разходи",
-            "4531": "Данък върху  покупките",
-            "4532": "Данък върху продажбите",
-            "453": "Данък върху  покупките",
-            "702": "Приходи от продажба на стоки",
-            "703": "Приходи от услуги",
-        }
-        return mapping.get(code_str, "Сметка")
-
     int_counterpart = int(re.sub(r"[^\d]", "", str(counterpart_account))[:3] or 401)
-    int_expense = int(re.sub(r"[^\d]", "", str(expense_account))[:3] or 601)
     int_vat = int(re.sub(r"[^\d]", "", str(vat_account))[:3] or 453)
+    default_nominal = "601" if is_purchase else "702"
 
-    is_pok = 1 if is_purchase else 0
-
-    if is_purchase:
-        if is_credit_note:
-            # Storno Purchase (Negative Debits)
-            # Kon 1: Net base
-            r0 = build_w_transfer_record(
-                kon_id=kon_id, kon=1, is_kredit=1, acct=int_counterpart, sub_acct=0.0,
-                amount=abs(f_tax_base), date_ole=doc_date_ole, is_dds=0,
-                acct_name=acct_title(str(int_counterpart)), fak_no=invoice_number,
-                doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
-                bulstat=bulstat, dan_no=vat_number, osnovanie=reason, is_pokupka=is_pok
-            )
-            r1 = build_w_transfer_record(
-                kon_id=kon_id, kon=1, is_kredit=2, acct=int_expense, sub_acct=0.0,
-                amount=-abs(f_tax_base), date_ole=doc_date_ole, is_dds=0,
-                acct_name=acct_title(str(int_expense)), fak_no=invoice_number,
-                doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
-                bulstat=bulstat, dan_no=vat_number, osnovanie=reason, is_pokupka=is_pok
-            )
-            records.extend([r0, r1])
-
-            # Kon 2: VAT
-            if f_vat != 0.0:
-                r2 = build_w_transfer_record(
-                    kon_id=kon_id, kon=2, is_kredit=1, acct=int_counterpart, sub_acct=0.0,
-                    amount=abs(f_vat), date_ole=doc_date_ole, is_dds=1,
-                    acct_name=acct_title(str(int_counterpart)), fak_no=invoice_number,
-                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
-                    bulstat=bulstat, dan_no=vat_number, osnovanie=reason, is_pokupka=is_pok
-                )
-                r3 = build_w_transfer_record(
-                    kon_id=kon_id, kon=2, is_kredit=2, acct=int_vat, sub_acct=1.0,
-                    amount=-abs(f_vat), date_ole=doc_date_ole, is_dds=1,
-                    acct_name=acct_title(str(int_vat)), fak_no=invoice_number,
-                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
-                    bulstat=bulstat, dan_no=vat_number, osnovanie=reason, is_pokupka=is_pok
-                )
-                records.extend([r2, r3])
-        else:
-            # Regular Purchase (Positive amounts)
-            # Kon 1: Net base
-            r0 = build_w_transfer_record(
-                kon_id=kon_id, kon=1, is_kredit=1, acct=int_counterpart, sub_acct=0.0,
-                amount=-abs(f_tax_base), date_ole=doc_date_ole, is_dds=0,
-                acct_name=acct_title(str(int_counterpart)), fak_no=invoice_number,
-                doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
-                bulstat=bulstat, dan_no=vat_number, osnovanie=reason, is_pokupka=is_pok
-            )
-            r1 = build_w_transfer_record(
-                kon_id=kon_id, kon=1, is_kredit=2, acct=int_expense, sub_acct=0.0,
-                amount=abs(f_tax_base), date_ole=doc_date_ole, is_dds=0,
-                acct_name=acct_title(str(int_expense)), fak_no=invoice_number,
-                doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
-                bulstat=bulstat, dan_no=vat_number, osnovanie=reason, is_pokupka=is_pok
-            )
-            records.extend([r0, r1])
-
-            # Kon 2: VAT
-            if f_vat != 0.0:
-                r2 = build_w_transfer_record(
-                    kon_id=kon_id, kon=2, is_kredit=1, acct=int_counterpart, sub_acct=0.0,
-                    amount=-abs(f_vat), date_ole=doc_date_ole, is_dds=1,
-                    acct_name=acct_title(str(int_counterpart)), fak_no=invoice_number,
-                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
-                    bulstat=bulstat, dan_no=vat_number, osnovanie=reason, is_pokupka=is_pok
-                )
-                r3 = build_w_transfer_record(
-                    kon_id=kon_id, kon=2, is_kredit=2, acct=int_vat, sub_acct=1.0,
-                    amount=abs(f_vat), date_ole=doc_date_ole, is_dds=1,
-                    acct_name=acct_title(str(int_vat)), fak_no=invoice_number,
-                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
-                    bulstat=bulstat, dan_no=vat_number, osnovanie=reason, is_pokupka=is_pok
-                )
-                records.extend([r2, r3])
-    else:
-        # Sales (Продажби)
-        int_client = int_counterpart if int_counterpart == 501 else 411
-        r0 = build_w_transfer_record(
-            kon_id=kon_id, kon=1, is_kredit=2, acct=int_client, sub_acct=0.0,
-            amount=abs(f_tax_base), date_ole=doc_date_ole, is_dds=0,
-            acct_name=acct_title(str(int_client)), fak_no=invoice_number,
-            doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
-            bulstat=bulstat, dan_no=vat_number, osnovanie=reason, is_pokupka=is_pok
-        )
-        r1 = build_w_transfer_record(
-            kon_id=kon_id, kon=1, is_kredit=1, acct=int_expense, sub_acct=0.0,
-            amount=abs(f_tax_base), date_ole=doc_date_ole, is_dds=0,
-            acct_name=acct_title(str(int_expense)), fak_no=invoice_number,
-            doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
-            bulstat=bulstat, dan_no=vat_number, osnovanie=reason, is_pokupka=is_pok
-        )
-        records.extend([r0, r1])
-
-        if f_vat != 0.0:
-            r2 = build_w_transfer_record(
-                kon_id=kon_id, kon=2, is_kredit=2, acct=int_client, sub_acct=0.0,
-                amount=abs(f_vat), date_ole=doc_date_ole, is_dds=1,
-                acct_name=acct_title(str(int_client)), fak_no=invoice_number,
-                doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
-                bulstat=bulstat, dan_no=vat_number, osnovanie=reason, is_pokupka=is_pok
-            )
-            r3 = build_w_transfer_record(
-                kon_id=kon_id, kon=2, is_kredit=1, acct=int_vat, sub_acct=2.0,
-                amount=abs(f_vat), date_ole=doc_date_ole, is_dds=1,
-                acct_name=acct_title(str(int_vat)), fak_no=invoice_number,
-                doc_date_str=doc_date_disp, doc_type=doc_type, company_name=company_name,
-                bulstat=bulstat, dan_no=vat_number, osnovanie=reason, is_pokupka=is_pok
-            )
-            records.extend([r2, r3])
+    records = build_invoice_transfer_records(
+        kon_id=kon_id,
+        invoice_number=invoice_number,
+        doc_date_ole=doc_date_ole,
+        doc_date_disp=doc_date_disp,
+        doc_type=doc_type,
+        company_name=company_name,
+        bulstat=bulstat,
+        dan_no=vat_number,
+        is_purchase=is_purchase,
+        is_credit_note=is_credit_note,
+        int_counterpart=int_counterpart,
+        int_vat=int_vat,
+        vat_amount=f_vat,
+        tax_base=f_tax_base,
+        default_nominal=default_nominal,
+        nominal_account=expense_account,
+        reason=reason,
+        distributions=distributions,
+    )
 
     # 3. Update Page 25 (Table 25 Definition)
     p25 = bytearray(db[25*PAGE_SIZE : 26*PAGE_SIZE])
@@ -500,26 +609,6 @@ def generate_multi_delta_pro_transfer_log(
     for p in range(29, 128):
         db[p*PAGE_SIZE : (p+1)*PAGE_SIZE] = b"\x00" * PAGE_SIZE
 
-    def acct_title(code: str) -> str:
-        code_str = str(code).split(".")[0]
-        mapping = {
-            "401": "Доставчици",
-            "411": "Клиенти",
-            "501": "Каса в левове",
-            "503": "Разплащателна сметка",
-            "601": "Разходи за материали",
-            "602": "Разходи за външни услуги",
-            "304": "Стоки",
-            "609": "Други разходи",
-            "4531": "Данък върху  покупките",
-            "4532": "Данък върху продажбите",
-            "453": "Данък върху  покупките",
-            "701": "Приходи от продажба на продукция",
-            "702": "Приходи от продажба на стоки",
-            "703": "Приходи от услуги",
-        }
-        return mapping.get(code_str, "Сметка")
-
     # 2. Build records for all documents
     records: list[bytes] = []
     total_gross = 0.0
@@ -532,7 +621,7 @@ def generate_multi_delta_pro_transfer_log(
 
         inv_no = str(m.get("invoice_number") or "").strip()
         doc_dt = str(m.get("date_issued") or "").strip()
-        is_cn = bool(m.get("is_credit_note", False))
+        is_cn = bool(m.get("is_credit_note", False)) or (float(f.get("total_amount", 0.0)) < 0)
         doc_type = "КИ" if is_cn else "ФАК"
 
         tax_base = float(f.get("tax_base", 0.0))
@@ -548,12 +637,11 @@ def generate_multi_delta_pro_transfer_log(
         reason = op.get("reason") or "м-ли"
 
         kon_id = start_kon_id + idx
-        is_purchase = (p.get("direction", "PURCHASE") == "PURCHASE")
-        is_pok = 1 if is_purchase else 0
+        direction = p.get("direction") or op.get("direction") or ("SALES" if p.get("counterpart_role") == "CLIENT" else "PURCHASE")
+        is_purchase = (str(direction).upper() == "PURCHASE")
 
         default_nominal = "601" if is_purchase else "702"
         nominal_account = op.get("revenue_account" if not is_purchase else "expense_account") or op.get("nominal_account") or default_nominal
-        int_expense = int(re.sub(r"[^\d]", "", str(nominal_account))[:3] or default_nominal)
 
         default_vat = "4531" if is_purchase else "4532"
         vat_account = op.get("vat_account") or default_vat
@@ -566,108 +654,35 @@ def generate_multi_delta_pro_transfer_log(
         sign = -1.0 if is_cn else 1.0
         total_gross += sign * total_amt
 
-        if is_purchase:
-            if is_cn:
-                r0 = build_w_transfer_record(
-                    kon_id=kon_id, kon=1, is_kredit=1, acct=int_counterpart, sub_acct=0.0,
-                    amount=abs(tax_base), date_ole=doc_date_ole, is_dds=0,
-                    acct_name=acct_title(str(int_counterpart)), fak_no=inv_no,
-                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=co_name,
-                    bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
-                )
-                r1 = build_w_transfer_record(
-                    kon_id=kon_id, kon=1, is_kredit=2, acct=int_expense, sub_acct=0.0,
-                    amount=-abs(tax_base), date_ole=doc_date_ole, is_dds=0,
-                    acct_name=acct_title(str(int_expense)), fak_no=inv_no,
-                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=co_name,
-                    bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
-                )
-                records.extend([r0, r1])
+        distributions = op.get("distributions") or doc.get("distributions")
+        if not distributions and doc.get("items"):
+            try:
+                from invoice_core.account_mapping import split_invoice_postings
+                distributions = split_invoice_postings(doc, prefer_subaccounts=False)
+            except Exception:
+                distributions = None
 
-                if vat_amt != 0.0:
-                    r2 = build_w_transfer_record(
-                        kon_id=kon_id, kon=2, is_kredit=1, acct=int_counterpart, sub_acct=0.0,
-                        amount=abs(vat_amt), date_ole=doc_date_ole, is_dds=1,
-                        acct_name=acct_title(str(int_counterpart)), fak_no=inv_no,
-                        doc_date_str=doc_date_disp, doc_type=doc_type, company_name=co_name,
-                        bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
-                    )
-                    r3 = build_w_transfer_record(
-                        kon_id=kon_id, kon=2, is_kredit=2, acct=int_vat, sub_acct=1.0,
-                        amount=-abs(vat_amt), date_ole=doc_date_ole, is_dds=1,
-                        acct_name=acct_title(str(int_vat)), fak_no=inv_no,
-                        doc_date_str=doc_date_disp, doc_type=doc_type, company_name=co_name,
-                        bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
-                    )
-                    records.extend([r2, r3])
-            else:
-                r0 = build_w_transfer_record(
-                    kon_id=kon_id, kon=1, is_kredit=1, acct=int_counterpart, sub_acct=0.0,
-                    amount=-abs(tax_base), date_ole=doc_date_ole, is_dds=0,
-                    acct_name=acct_title(str(int_counterpart)), fak_no=inv_no,
-                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=co_name,
-                    bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
-                )
-                r1 = build_w_transfer_record(
-                    kon_id=kon_id, kon=1, is_kredit=2, acct=int_expense, sub_acct=0.0,
-                    amount=abs(tax_base), date_ole=doc_date_ole, is_dds=0,
-                    acct_name=acct_title(str(int_expense)), fak_no=inv_no,
-                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=co_name,
-                    bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
-                )
-                records.extend([r0, r1])
-
-                if vat_amt != 0.0:
-                    r2 = build_w_transfer_record(
-                        kon_id=kon_id, kon=2, is_kredit=1, acct=int_counterpart, sub_acct=0.0,
-                        amount=-abs(vat_amt), date_ole=doc_date_ole, is_dds=1,
-                        acct_name=acct_title(str(int_counterpart)), fak_no=inv_no,
-                        doc_date_str=doc_date_disp, doc_type=doc_type, company_name=co_name,
-                        bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
-                    )
-                    r3 = build_w_transfer_record(
-                        kon_id=kon_id, kon=2, is_kredit=2, acct=int_vat, sub_acct=1.0,
-                        amount=abs(vat_amt), date_ole=doc_date_ole, is_dds=1,
-                        acct_name=acct_title(str(int_vat)), fak_no=inv_no,
-                        doc_date_str=doc_date_disp, doc_type=doc_type, company_name=co_name,
-                        bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
-                    )
-                    records.extend([r2, r3])
-        else:
-            # Sales (Продажби)
-            int_client = int_counterpart if int_counterpart == 501 else 411
-            r0 = build_w_transfer_record(
-                kon_id=kon_id, kon=1, is_kredit=2, acct=int_client, sub_acct=0.0,
-                amount=abs(tax_base), date_ole=doc_date_ole, is_dds=0,
-                acct_name=acct_title(str(int_client)), fak_no=inv_no,
-                doc_date_str=doc_date_disp, doc_type=doc_type, company_name=co_name,
-                bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
-            )
-            r1 = build_w_transfer_record(
-                kon_id=kon_id, kon=1, is_kredit=1, acct=int_expense, sub_acct=0.0,
-                amount=abs(tax_base), date_ole=doc_date_ole, is_dds=0,
-                acct_name=acct_title(str(int_expense)), fak_no=inv_no,
-                doc_date_str=doc_date_disp, doc_type=doc_type, company_name=co_name,
-                bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
-            )
-            records.extend([r0, r1])
-
-            if vat_amt != 0.0:
-                r2 = build_w_transfer_record(
-                    kon_id=kon_id, kon=2, is_kredit=2, acct=int_client, sub_acct=0.0,
-                    amount=abs(vat_amt), date_ole=doc_date_ole, is_dds=1,
-                    acct_name=acct_title(str(int_client)), fak_no=inv_no,
-                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=co_name,
-                    bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
-                )
-                r3 = build_w_transfer_record(
-                    kon_id=kon_id, kon=2, is_kredit=1, acct=int_vat, sub_acct=2.0,
-                    amount=abs(vat_amt), date_ole=doc_date_ole, is_dds=1,
-                    acct_name=acct_title(str(int_vat)), fak_no=inv_no,
-                    doc_date_str=doc_date_disp, doc_type=doc_type, company_name=co_name,
-                    bulstat=bulstat, dan_no=dan_no, osnovanie=reason, is_pokupka=is_pok
-                )
-                records.extend([r2, r3])
+        doc_records = build_invoice_transfer_records(
+            kon_id=kon_id,
+            invoice_number=inv_no,
+            doc_date_ole=doc_date_ole,
+            doc_date_disp=doc_date_disp,
+            doc_type=doc_type,
+            company_name=co_name,
+            bulstat=bulstat,
+            dan_no=dan_no,
+            is_purchase=is_purchase,
+            is_credit_note=is_cn,
+            int_counterpart=int_counterpart,
+            int_vat=int_vat,
+            vat_amount=vat_amt,
+            tax_base=tax_base,
+            default_nominal=default_nominal,
+            nominal_account=nominal_account,
+            reason=reason,
+            distributions=distributions,
+        )
+        records.extend(doc_records)
 
     # 3. Pack records across pages starting from Page 29
     pages: list[tuple[int, list[bytes], int]] = []

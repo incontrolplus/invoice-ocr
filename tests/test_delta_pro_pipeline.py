@@ -124,3 +124,187 @@ def test_problem_invoices_reconciliation():
             assert fin.tax_base is not None and float(fin.tax_base.amount) == exp_tb, f"[{label}] Expected tax_base {exp_tb}, got {fin.tax_base}"
         if exp_vat is not None:
             assert fin.vat_amount is not None and float(fin.vat_amount.amount) == exp_vat, f"[{label}] Expected VAT {exp_vat}, got {fin.vat_amount}"
+
+
+def test_delta_pro_multi_account_distribution():
+    """Verify that an invoice with multi-account distribution generates 2*N + 2 balanced records."""
+    import struct
+    distributions = [
+        {"account": "601", "amount": 100.00, "description": "Цимент и арматура", "subaccount": 0.0},
+        {"account": "602", "amount": 50.00, "description": "Транспортни услуги", "subaccount": 0.0},
+    ]
+    log_bytes, ldb_bytes = generate_delta_pro_transfer_log(
+        invoice_number="0090255555",
+        doc_date="2026-09-18",
+        company_name="ТЕСТОВ ДОСТАВЧИК ЕООД",
+        bulstat="201234567",
+        vat_number="BG201234567",
+        tax_base=150.00,
+        vat_amount=30.00,
+        total_amount=180.00,
+        currency="EUR",
+        is_purchase=True,
+        is_credit_note=False,
+        counterpart_account="401",
+        vat_account="4531",
+        distributions=distributions,
+    )
+    assert len(log_bytes) == 65536
+    assert len(ldb_bytes) == 64
+
+    # Check Table 25 Definition on Page 25
+    p25 = log_bytes[25*2048 : 26*2048]
+    rec_count = struct.unpack("<I", p25[36:40])[0]
+    assert rec_count == 6  # 2 for 601 (kon=1), 2 for 602 (kon=2), 2 for 4531 (kon=3)
+
+    # Check Page 29
+    p29 = log_bytes[29*2048 : 30*2048]
+    p29_rec_count = struct.unpack("<H", p29[8:10])[0]
+    assert p29_rec_count == 6
+
+    # Verify that accounts 601, 602, 4531 and 401 are encoded as binary short ints and account titles in CP1251
+    assert struct.pack("<H", 601) in log_bytes
+    assert struct.pack("<H", 602) in log_bytes
+    assert struct.pack("<H", 401) in log_bytes
+    assert "Разходи за материали".encode("cp1251") in log_bytes
+    assert "Разходи за външни услуги".encode("cp1251") in log_bytes
+
+
+def test_delta_pro_multi_account_distribution_credit_note():
+    """Verify that a credit note with multi-account distribution generates storno records."""
+    import struct
+    distributions = [
+        {"account": "601", "amount": 40.00, "description": "Върнати материали"},
+        {"account": "602", "amount": 10.00, "description": "Корекция транспорт"},
+    ]
+    log_bytes, _ = generate_delta_pro_transfer_log(
+        invoice_number="0090255556",
+        doc_date="2026-09-18",
+        company_name="ТЕСТОВ ДОСТАВЧИК ЕООД",
+        bulstat="201234567",
+        vat_number="BG201234567",
+        tax_base=50.00,
+        vat_amount=10.00,
+        total_amount=60.00,
+        currency="EUR",
+        is_purchase=True,
+        is_credit_note=True,
+        counterpart_account="401",
+        vat_account="4531",
+        distributions=distributions,
+    )
+    p25 = log_bytes[25*2048 : 26*2048]
+    assert struct.unpack("<I", p25[36:40])[0] == 6
+    assert b"\xca\xc8" in log_bytes  # "КИ" in CP1251
+
+
+def test_historical_matcher_multi_item_distribution_package():
+    """Verify that process_invoice_and_create_accounting_package automatically creates distributions for multi-item invoices."""
+    inv_data = {
+        "invoice_metadata": {
+            "invoice_number": "1000088888",
+            "date_issued": "2026-09-15",
+            "currency": "EUR",
+        },
+        "supplier": {
+            "name": "СТРОЙМАРКЕТ ООД",
+            "eik": "123456789",
+            "vat_number": "BG123456789",
+        },
+        "recipient": {
+            "name": "БИЛДИНГ 11 ООД",
+            "eik": "206062202",
+        },
+        "financial_summary": {
+            "tax_base": 1200.00,
+            "vat_amount": 240.00,
+            "total_amount_due": 1440.00,
+        },
+        "items": [
+            {
+                "description": "Бетон B25",
+                "quantity": 10.0,
+                "unit_price": 80.0,
+                "total_price": 800.00,
+            },
+            {
+                "description": "Транспорт и помпа бетон",
+                "quantity": 1.0,
+                "unit_price": 400.0,
+                "total_price": 400.00,
+            },
+        ],
+    }
+    bundle = process_invoice_and_create_accounting_package(inv_data)
+    assert bundle is not None
+    acc_op = bundle["accounting_operation"]
+    assert "distributions" in acc_op
+    dists = acc_op["distributions"]
+    assert dists is not None and len(dists) >= 2
+
+    # Check debit breakdown: items split into goods/materials (304) and transport services (602) + VAT (4531)
+    debit_accounts = [d["account"] for d in acc_op["debit_entries"]]
+    assert "304" in debit_accounts  # Бетон -> стоки/материали
+    assert "602" in debit_accounts  # Транспорт -> услуги
+    assert "4531" in debit_accounts  # ДДС
+    credit_accounts = [c["account"] for c in acc_op["credit_entries"]]
+    assert "401" in credit_accounts  # Доставчик
+
+    assert len(bundle["transfer_log_bytes"]) == 65536
+
+
+def test_multi_delta_pro_batch_with_distributions():
+    """Verify that generate_multi_delta_pro_transfer_log packs multi-account distributions into a 256KB batch file."""
+    from invoice_core.delta_pro_generator import generate_multi_delta_pro_transfer_log
+    import struct
+
+    docs = [
+        # Document 1: standard single-account invoice (4 records)
+        {
+            "document_metadata": {"invoice_number": "0000000001", "date_issued": "2026-09-01"},
+            "parties": {"direction": "PURCHASE", "counterpart_name": "ДОСТАВЧИК 1", "counterpart_eik": "111111111"},
+            "financials": {"tax_base": 100.0, "vat_amount": 20.0, "total_amount": 120.0},
+            "accounting_operation": {"expense_account": "601", "vat_account": "4531", "counterpart_account": "401"},
+        },
+        # Document 2: multi-item distribution (6 records)
+        {
+            "document_metadata": {"invoice_number": "0000000002", "date_issued": "2026-09-02"},
+            "parties": {"direction": "PURCHASE", "counterpart_name": "ДОСТАВЧИК 2", "counterpart_eik": "222222222"},
+            "financials": {"tax_base": 300.0, "vat_amount": 60.0, "total_amount": 360.0},
+            "accounting_operation": {
+                "vat_account": "4531",
+                "counterpart_account": "401",
+                "distributions": [
+                    {"account": "601", "amount": 200.0, "description": "Материали"},
+                    {"account": "602", "amount": 100.0, "description": "Услуги"},
+                ],
+            },
+        },
+        # Document 3: sales invoice (4 records)
+        {
+            "document_metadata": {"invoice_number": "0000000003", "date_issued": "2026-09-03"},
+            "parties": {"direction": "SALES", "counterpart_name": "КЛИЕНТ 1", "counterpart_eik": "333333333", "counterpart_role": "CLIENT"},
+            "financials": {"tax_base": 500.0, "vat_amount": 100.0, "total_amount": 600.0},
+            "accounting_operation": {"revenue_account": "702", "vat_account": "4532", "counterpart_account": "411"},
+        },
+    ]
+
+    log_bytes, ldb_bytes = generate_multi_delta_pro_transfer_log(
+        documents=docs,
+        client_company_name="БИЛДИНГ 11 ООД",
+        start_kon_id=2001,
+    )
+
+    assert len(log_bytes) == 262144
+    assert len(ldb_bytes) == 64
+
+    # Check Table 25 Definition on Page 25
+    p25 = log_bytes[25*2048 : 26*2048]
+    total_recs = struct.unpack("<I", p25[36:40])[0]
+    # Doc 1: 4 records, Doc 2: 6 records, Doc 3: 4 records => total 14 records
+    assert total_recs == 14
+
+    # Check Page 24 system string
+    p24 = log_bytes[24*2048 : 25*2048]
+    assert b"3 \xe4\xee\xea\xf3\xec\xe5\xed\xf2\xe0" in p24  # "3 документа" in CP1251
+

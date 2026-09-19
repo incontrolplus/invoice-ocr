@@ -402,7 +402,16 @@ def process_invoice_and_create_accounting_package(
         doc_type_raw=meta.get("document_type"),
     )
 
-    # 2. Build Microinvest Delta Pro Native Files
+    # 2. Extract or build multi-account line item distributions
+    distributions = invoice_data.get("distributions")
+    if not distributions and items and len(items) > 1:
+        try:
+            from invoice_core.account_mapping import split_invoice_postings
+            distributions = split_invoice_postings(invoice_data, prefer_subaccounts=False)
+        except Exception:
+            distributions = None
+
+    # 3. Build Microinvest Delta Pro Native Files
     log_bytes, ldb_bytes = generate_delta_pro_transfer_log(
         invoice_number=inv_no,
         doc_date=doc_dt,
@@ -420,6 +429,7 @@ def process_invoice_and_create_accounting_package(
         counterpart_account=match_rep.recommended_counterpart_account,
         reason=match_rep.recommended_reason,
         client_company_name=match_rep.client_company_name,
+        distributions=distributions,
     )
 
     # Double entry accounting operation summary
@@ -429,7 +439,18 @@ def process_invoice_and_create_accounting_package(
     if is_purchase:
         # Покупки: Дт 601/602/304, Дт 4531 / Кт 401 (или 501 при каса)
         dt_rows = []
-        if tax_base != 0.0:
+        if distributions and len(distributions) > 1:
+            for dist in distributions:
+                acct_str = str(dist.get("account"))
+                dt_rows.append({
+                    "account": acct_str,
+                    "account_name": dist.get("account_name") or SYNTHETIC_ACCOUNTS.get(acct_str, "Разход / Сметка"),
+                    "direction": "DEBIT",
+                    "amount": round(sign * abs(float(dist.get("amount", 0.0))), 2),
+                    "currency": curr,
+                    "description": dist.get("description"),
+                })
+        elif tax_base != 0.0:
             dt_rows.append({
                 "account": match_rep.recommended_expense_account,
                 "account_name": match_rep.recommended_expense_account_name,
@@ -462,7 +483,18 @@ def process_invoice_and_create_accounting_package(
             "currency": curr,
         }]
         kt_rows = []
-        if tax_base != 0.0:
+        if distributions and len(distributions) > 1:
+            for dist in distributions:
+                acct_str = str(dist.get("account"))
+                kt_rows.append({
+                    "account": acct_str,
+                    "account_name": dist.get("account_name") or SYNTHETIC_ACCOUNTS.get(acct_str, "Приход / Сметка"),
+                    "direction": "CREDIT",
+                    "amount": round(sign * abs(float(dist.get("amount", 0.0))), 2),
+                    "currency": curr,
+                    "description": dist.get("description"),
+                })
+        elif tax_base != 0.0:
             kt_rows.append({
                 "account": match_rep.recommended_expense_account,
                 "account_name": match_rep.recommended_expense_account_name,
@@ -494,6 +526,7 @@ def process_invoice_and_create_accounting_package(
             "contractor_name": match_rep.contractor_name,
             "contractor_eik": match_rep.contractor_eik,
             "reason": match_rep.recommended_reason,
+            "distributions": distributions,
             "debit_entries": dt_rows,
             "credit_entries": kt_rows,
             "is_balanced": True,

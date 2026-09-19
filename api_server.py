@@ -4793,10 +4793,24 @@ async def generate_batch_transfer_log(
         total = float(rec.total_amount or f.get("total_amount") or op.get("total_amount") or 0.0)
         curr = rec.currency or f.get("currency") or op.get("currency") or "EUR"
 
-        exp_acc = str(op.get("expense_account") or "601")
-        vat_acc = str(op.get("vat_account") or "4531")
-        cred_acc = str(op.get("counterpart_account") or "401")
+        direction = (
+            p.get("direction")
+            or op.get("direction")
+            or getattr(rec, "direction", None)
+            or ("SALES" if getattr(rec, "doc_type", None) == "SALES" or p.get("counterpart_role") == "CLIENT" else "PURCHASE")
+        )
+        exp_acc = str(op.get("expense_account") or op.get("nominal_account") or ("601" if direction == "PURCHASE" else "702"))
+        vat_acc = str(op.get("vat_account") or ("4531" if direction == "PURCHASE" else "4532"))
+        cred_acc = str(op.get("counterpart_account") or ("401" if direction == "PURCHASE" else "411"))
         reason = str(op.get("reason") or "м-ли")
+
+        distributions = op.get("distributions") or info.get("distributions")
+        if not distributions and info.get("items") and len(info.get("items")) > 1:
+            try:
+                from invoice_core.account_mapping import split_invoice_postings
+                distributions = split_invoice_postings(info, prefer_subaccounts=False)
+            except Exception:
+                distributions = None
 
         docs_payload.append({
             "document_metadata": {
@@ -4805,7 +4819,7 @@ async def generate_batch_transfer_log(
                 "is_credit_note": is_cn,
             },
             "parties": {
-                "direction": "PURCHASE",
+                "direction": direction,
                 "counterpart_name": supp_name,
                 "counterpart_eik": supp_eik,
                 "counterpart_vat": supp_vat,
@@ -4817,11 +4831,16 @@ async def generate_batch_transfer_log(
                 "currency": curr,
             },
             "accounting_operation": {
+                "direction": direction,
                 "expense_account": exp_acc,
+                "nominal_account": exp_acc,
                 "vat_account": vat_acc,
                 "counterpart_account": cred_acc,
                 "reason": reason,
+                "distributions": distributions,
             },
+            "items": info.get("items"),
+            "distributions": distributions,
         })
 
     # If no DB records were found, fallback to cached Building 11 analysis if present
