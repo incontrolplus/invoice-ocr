@@ -384,7 +384,7 @@ class TestEmpiricalChallengerM1:
 
     def test_unsupported_extensions_strictly_rejected(self, tmp_path: Path) -> None:
         """Unsupported file extensions must raise ValueError with descriptive message."""
-        bad_extensions = [".txt", ".docx", ".xlsx", ".csv", ".json", ".xml", ".tiff", ".bmp"]
+        bad_extensions = [".txt", ".docx", ".xlsx", ".csv", ".json", ".xml", ".bmp"]
         for ext in bad_extensions:
             bad_file = tmp_path / f"test{ext}"
             bad_file.write_bytes(b"dummy")

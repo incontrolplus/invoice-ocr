@@ -1,0 +1,172 @@
+"""FastAPI Router for Health, Readiness, Metrics, and HITL Web Dashboard."""
+
+import os
+from pathlib import Path
+import resource
+import time
+from typing import Optional
+
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+import pytesseract
+
+from invoice_ocr import verify_tesseract_languages
+from routers.common import API_VERSION, SERVICE_START_TIME
+
+router = APIRouter()
+
+
+class HealthResponse(BaseModel):
+    status: str = Field(..., json_schema_extra={"example": "ok"})
+    version: str = Field(..., json_schema_extra={"example": "1.0.0"})
+    uptime_seconds: float = Field(..., json_schema_extra={"example": 123.45})
+    tesseract_version: Optional[str] = Field(None, json_schema_extra={"example": "5.3.4"})
+    tesseract_ready: bool = Field(..., json_schema_extra={"example": True})
+    available_languages: list[str] = Field(..., json_schema_extra={"example": ["bul", "eng", "osd"]})
+    missing_required_languages: list[str] = Field(..., json_schema_extra={"example": []})
+
+
+class LanguagesResponse(BaseModel):
+    available_languages: list[str] = Field(..., json_schema_extra={"example": ["bul", "eng", "osd"]})
+    required_ready: bool = Field(..., json_schema_extra={"example": True})
+    missing_languages: list[str] = Field(..., json_schema_extra={"example": []})
+
+
+@router.get(
+    "/dashboard",
+    tags=["HITL Dashboard"],
+    response_class=HTMLResponse,
+    summary="Human-in-the-Loop Web Dashboard",
+)
+@router.head("/dashboard", include_in_schema=False)
+async def dashboard_view():
+    """Serve the interactive split-screen Human-in-the-Loop web dashboard."""
+    html_file = Path("static/index.html")
+    if html_file.exists():
+        return HTMLResponse(content=html_file.read_text(encoding="utf-8"))
+    return HTMLResponse(content="<h3>Dashboard HTML file not found at static/index.html</h3>", status_code=404)
+
+
+@router.get(
+    "/hitl",
+    tags=["HITL Dashboard"],
+    response_class=HTMLResponse,
+    summary="Human-in-the-Loop Web Dashboard (Alias)",
+)
+@router.head("/hitl", include_in_schema=False)
+async def hitl_alias_view():
+    """Alias for /dashboard."""
+    return await dashboard_view()
+
+
+@router.get("/", summary="Root Web Dashboard / API Overview")
+@router.head("/", include_in_schema=False)
+async def root(request: Request):
+    """Serve Dashboard for browser requests, or API overview JSON for API clients."""
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept and "application/json" not in accept:
+        return await dashboard_view()
+    return {
+        "service": "Bulgarian Invoice OCR REST API",
+        "version": API_VERSION,
+        "docs": "/docs",
+        "redoc": "/redoc",
+        "dashboard": "/dashboard",
+        "endpoints": {
+            "dashboard": "GET /dashboard",
+            "hitl": "GET /hitl",
+            "health": "GET /health",
+            "metrics": "GET /metrics",
+            "languages": "GET /api/v1/languages",
+            "process_invoice": "POST /api/v1/invoices/process",
+            "batch_invoices": "POST /api/v1/invoices/batch",
+            "batch_dir": "POST /api/v1/invoices/batch-dir",
+            "list_documents": "GET /api/v1/documents",
+            "get_document": "GET /api/v1/documents/{document_id}",
+            "correct_document": "POST /api/v1/documents/{document_id}/correct",
+            "approve_document": "POST /api/v1/documents/{document_id}/approve",
+            "audit_trail": "GET /api/v1/documents/{document_id}/audit-trail",
+            "test_webhook": "POST /api/v1/webhooks/test",
+            "webhook_logs": "GET /api/v1/webhooks/logs",
+        },
+    }
+
+
+@router.get(
+    "/health",
+    response_model=HealthResponse,
+    summary="Health & Readiness Check",
+    tags=["System"],
+)
+@router.head("/health", include_in_schema=False)
+async def health():
+    """Check microservice health, uptime, and Tesseract OCR engine readiness."""
+    try:
+        tess_ver = pytesseract.get_tesseract_version()
+        is_ready, available, missing = verify_tesseract_languages(["bul", "eng"])
+        tess_ready = is_ready
+    except Exception:
+        tess_ver = None
+        tess_ready = False
+        available = []
+        missing = ["bul", "eng"]
+
+    return HealthResponse(
+        status="ok" if tess_ready else "degraded",
+        version=API_VERSION,
+        uptime_seconds=round(time.time() - SERVICE_START_TIME, 2),
+        tesseract_version=str(tess_ver) if tess_ver else None,
+        tesseract_ready=tess_ready,
+        available_languages=available,
+        missing_required_languages=missing,
+    )
+
+
+@router.get(
+    "/metrics",
+    summary="System & Execution Metrics",
+    tags=["System"],
+)
+async def metrics():
+    """Expose service execution, memory, and OCR engine metrics."""
+    uptime = round(time.time() - SERVICE_START_TIME, 2)
+    max_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # On macOS, ru_maxrss is in bytes; on Linux, in kilobytes
+    max_rss_mb = round(max_rss / (1024 * 1024), 2) if os.uname().sysname == "Darwin" else round(max_rss / 1024, 2)
+
+    try:
+        tess_ver = str(pytesseract.get_tesseract_version())
+        is_ready, available, _ = verify_tesseract_languages(["bul", "eng"])
+    except Exception:
+        tess_ver = None
+        is_ready = False
+        available = []
+
+    return {
+        "status": "ok",
+        "version": API_VERSION,
+        "uptime_seconds": uptime,
+        "memory_max_rss_mb": max_rss_mb,
+        "tesseract": {
+            "version": tess_ver,
+            "ready": is_ready,
+            "languages_count": len(available),
+        },
+    }
+
+
+@router.get(
+    "/api/v1/languages",
+    response_model=LanguagesResponse,
+    summary="List Installed OCR Languages",
+    tags=["System"],
+)
+async def list_languages():
+    """List all available Tesseract OCR languages and check required Bulgarian/English models."""
+    is_ready, available, missing = verify_tesseract_languages(["bul", "eng"])
+    return LanguagesResponse(
+        available_languages=available,
+        required_ready=is_ready,
+        missing_languages=missing,
+    )
