@@ -13,6 +13,8 @@ import time
 import uuid
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from database import (
     AuditTrailRecord,
     DocumentRecord,
