@@ -18,14 +18,14 @@ except ImportError:
     import fitz as pymupdf
     fitz = pymupdf
 
-from .constants import (
+from invoice_core.constants import (
     DEFAULT_RASTER_DPI,
     IMAGE_EXTENSIONS,
     PDF_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     TIFF_EXTENSIONS,
 )
-from .models import PageImage
+from invoice_core.extraction.models import PageImage
 
 logger = logging.getLogger("invoice_ocr")
 

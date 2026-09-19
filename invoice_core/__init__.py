@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 from . import (
-    constants, currency, tesseract_env, models, normalizers, ingestion,
-    preprocessing, ocr_passes, layout, classification, extraction,
+    ocr, extraction, accounting, verification, workers, ingestion,
+    constants, currency, tesseract_env, models, normalizers,
+    preprocessing, ocr_passes, layout, classification, extraction as _extraction_mod,
     table_recovery, financials, validation, cache, pipeline, batch, cli,
     vendor_profiles, microinvest_export, local_llm, chart_of_accounts,
     account_mapping, tax_period_validator, business_navigator_export,
     ajur_export, worker_pool, legal_compliance, delta_learner,
     feedback_learner, feedback_learning, hitl_learner,
+    partner_verification, delta_pro_generator, historical_matcher,
+    email_ingestion, imap_poller, watcher, notifications,
 )
+extraction = extraction
 
 from .constants import (
     ALL_COLUMN_SYNONYMS_SORTED,
@@ -596,13 +600,15 @@ from .cli import (
 )
 
 _SUBMODULES = [
-    constants, currency, tesseract_env, models, normalizers, ingestion,
-    preprocessing, ocr_passes, layout, classification, extraction,
+    ocr, extraction, accounting, verification, workers, ingestion,
+    constants, currency, tesseract_env, models, normalizers,
+    preprocessing, ocr_passes, layout, classification,
     table_recovery, financials, validation, cache, pipeline, batch, cli,
     vendor_profiles, microinvest_export, chart_of_accounts, account_mapping,
     tax_period_validator, business_navigator_export, ajur_export, worker_pool,
     legal_compliance, delta_learner, feedback_learner, feedback_learning,
-    hitl_learner,
+    hitl_learner, partner_verification, delta_pro_generator,
+    historical_matcher, email_ingestion, imap_poller, watcher, notifications,
 ]
 for _mod in _SUBMODULES:
     for _name in dir(_mod):
