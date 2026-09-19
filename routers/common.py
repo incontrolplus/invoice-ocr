@@ -280,6 +280,17 @@ def _format_smartscan_response(inv: Invoice, raw_text: str = "") -> dict[str, An
     elif subtotal == 0.0 and total_amount > 0:
         subtotal = round(total_amount - tax_amount, 2)
 
+    if not items:
+        base_val = subtotal if subtotal > 0 else total_amount
+        items.append({
+            "description": "Стоки / Услуги по фактура",
+            "quantity": 1.0,
+            "unit": "бр.",
+            "unitPrice": base_val,
+            "totalPrice": base_val,
+            "vatRate": 20.0,
+        })
+
     cur = (
         (inv.financial_summary.total_amount_due.currency if inv.financial_summary.total_amount_due else None)
         or (inv.financial_summary.tax_base.currency if inv.financial_summary.tax_base else None)
@@ -295,6 +306,41 @@ def _format_smartscan_response(inv: Invoice, raw_text: str = "") -> dict[str, An
     if not rec_vat and inv.recipient.eik:
         rec_vat = f"BG{inv.recipient.eik}"
 
+    doc_type_raw = str(getattr(inv.invoice_metadata, "document_type", "INVOICE")).upper()
+    mapping = {
+        "INVOICE": "invoice",
+        "CREDIT_NOTE": "invoice",
+        "DEBIT_NOTE": "invoice",
+        "FISCAL_RECEIPT": "receipt",
+        "GOODS_RECEIPT": "form",
+        "PAYMENT_ORDER_NAP": "form",
+        "PROTOCOL_CHL_117": "invoice",
+        "FISCAL_MEMORY_REPORT": "receipt",
+    }
+    doc_type = mapping.get(doc_type_raw, "invoice")
+    conf_score = float(inv.invoice_metadata.ocr_confidence_score or 0.95)
+
+    fields_dict = {
+        "invoiceNumber": inv.invoice_metadata.invoice_number,
+        "invoiceDate": inv.invoice_metadata.date_issued,
+        "dueDate": inv.payment_details.due_date,
+        "vendorName": inv.supplier.name,
+        "vendorAddress": inv.supplier.address,
+        "vendorTaxId": inv.supplier.eik,
+        "vendorVatId": sup_vat,
+        "iban": inv.payment_details.iban,
+        "customerName": inv.recipient.name,
+        "customerAddress": inv.recipient.address,
+        "customerTaxId": inv.recipient.eik,
+        "customerVatNumber": rec_vat,
+        "subtotal": subtotal,
+        "taxRate": 20.0,
+        "taxAmount": tax_amount,
+        "totalAmount": total_amount,
+        "currency": cur,
+        "paymentTerms": inv.payment_details.method,
+    }
+
     data_payload = {
         "invoiceNumber": inv.invoice_metadata.invoice_number,
         "invoiceDate": inv.invoice_metadata.date_issued,
@@ -309,6 +355,10 @@ def _format_smartscan_response(inv: Invoice, raw_text: str = "") -> dict[str, An
         "customerTaxId": inv.recipient.eik,
         "customerVatNumber": rec_vat,
         "items": items,
+        "lineItems": items,
+        "fields": fields_dict,
+        "documentType": doc_type,
+        "classificationConfidence": conf_score,
         "subtotal": subtotal,
         "taxRate": 20.0,
         "taxAmount": tax_amount,
@@ -322,6 +372,11 @@ def _format_smartscan_response(inv: Invoice, raw_text: str = "") -> dict[str, An
     return {
         "success": True,
         "data": data_payload,
+        "documentType": doc_type,
+        "classificationConfidence": conf_score,
+        "confidence": conf_score,
+        "fields": fields_dict,
+        "lineItems": items,
+        "items": items,
         "needsValidation": not inv.validation.is_valid,
-        "confidence": float(inv.invoice_metadata.ocr_confidence_score or 0.95),
     }

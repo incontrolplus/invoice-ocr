@@ -1022,6 +1022,7 @@ async def classify_document_local(request: Request):
         "success": True,
         "documentType": category,
         "confidence": "high",
+        "classificationConfidence": 0.95,
         "engine": "local-rule-classifier",
     }
 

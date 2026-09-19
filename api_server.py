@@ -153,7 +153,7 @@ async def add_process_time_header(request: Request, call_next):
 # ---------------------------------------------------------------------------
 API_KEY = os.environ.get("API_KEY", "")
 API_KEY_HEADER = "X-API-Key"
-AUTH_EXEMPT_PATHS = {"/", "/health", "/metrics", "/docs", "/redoc", "/openapi.json", "/dashboard", "/hitl"}
+AUTH_EXEMPT_PATHS = {"/", "/health", "/metrics", "/docs", "/redoc", "/openapi.json", "/dashboard", "/hitl", "/api/v1/system/ecosystem-health"}
 AUTH_EXEMPT_PREFIXES = ("/static/", "/api/document-scanner/", "/api/tesseract/", "/api/businesses/")
 
 

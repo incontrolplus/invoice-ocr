@@ -33,6 +33,58 @@ class LanguagesResponse(BaseModel):
     missing_languages: list[str] = Field(..., json_schema_extra={"example": []})
 
 
+class TesseractHealth(BaseModel):
+    ready: bool
+    version: Optional[str] = None
+    available_languages: list[str] = []
+    missing_required_languages: list[str] = []
+    required_ready: bool = False
+
+
+class DatabaseHealth(BaseModel):
+    connected: bool
+    status: str
+    tables: dict[str, bool]
+    audit_table_ready: bool
+    document_count: int = 0
+    audit_trail_count: int = 0
+
+
+class WorkerPoolHealth(BaseModel):
+    ready: bool
+    status: str
+    max_workers: int = 0
+    is_initialized: bool = False
+
+
+class VendorProfilesHealth(BaseModel):
+    available: bool
+    path: str
+    accessible: bool
+    vendor_count: int = 0
+    vendors: list[str] = []
+
+
+class MicroinvestHealth(BaseModel):
+    module_ready: bool
+    status: str
+    delta_pro_available: bool
+    sklad_pro_available: bool
+    formats: list[str] = []
+
+
+class EcosystemHealthResponse(BaseModel):
+    status: str = Field(..., json_schema_extra={"example": "healthy"})
+    timestamp: str = Field(..., json_schema_extra={"example": "2026-09-19T10:30:00Z"})
+    version: str = Field(..., json_schema_extra={"example": "1.0.0"})
+    uptime_seconds: float = Field(..., json_schema_extra={"example": 123.45})
+    tesseract: TesseractHealth
+    database: DatabaseHealth
+    worker_pool: WorkerPoolHealth
+    vendor_profiles: VendorProfilesHealth
+    microinvest_export: MicroinvestHealth
+
+
 @router.get(
     "/dashboard",
     tags=["HITL Dashboard"],
@@ -77,6 +129,7 @@ async def root(request: Request):
             "dashboard": "GET /dashboard",
             "hitl": "GET /hitl",
             "health": "GET /health",
+            "ecosystem_health": "GET /api/v1/system/ecosystem-health",
             "metrics": "GET /metrics",
             "languages": "GET /api/v1/languages",
             "process_invoice": "POST /api/v1/invoices/process",
@@ -170,3 +223,136 @@ async def list_languages():
         required_ready=is_ready,
         missing_languages=missing,
     )
+
+
+@router.get(
+    "/api/v1/system/ecosystem-health",
+    response_model=EcosystemHealthResponse,
+    summary="Microinvest Ecosystem Diagnostic Status",
+    tags=["System"],
+)
+@router.head("/api/v1/system/ecosystem-health", include_in_schema=False)
+async def ecosystem_health():
+    """Verify end-to-end ecosystem health: Tesseract OCR, DB & Audit tables, Worker Pool, Vendors config, and Microinvest Delta Pro export."""
+    from datetime import datetime, timezone
+    from sqlalchemy import inspect
+    from database import get_db_session, DocumentRecord, AuditTrailRecord
+    from invoice_ocr import get_ocr_pool
+
+    # 1. Tesseract OCR readiness (version and bul/eng languages)
+    try:
+        tess_ver = str(pytesseract.get_tesseract_version())
+        is_ready, available, missing = verify_tesseract_languages(["bul", "eng"])
+    except Exception:
+        tess_ver = None
+        is_ready = False
+        available = []
+        missing = ["bul", "eng"]
+
+    tess_health = TesseractHealth(
+        ready=is_ready,
+        version=tess_ver,
+        available_languages=available,
+        missing_required_languages=missing,
+        required_ready=is_ready,
+    )
+
+    # 2. Database and audit tables state
+    db_connected = False
+    tables_status = {"documents": False, "audit_trail": False, "jobs": False}
+    doc_count = 0
+    audit_count = 0
+    try:
+        with get_db_session() as db:
+            inspector = inspect(db.bind)
+            existing_tables = inspector.get_table_names() if inspector else []
+            tables_status["documents"] = "documents" in existing_tables
+            tables_status["audit_trail"] = "audit_trail" in existing_tables
+            tables_status["jobs"] = "jobs" in existing_tables
+            db_connected = True
+            doc_count = db.query(DocumentRecord).count() if tables_status["documents"] else 0
+            audit_count = db.query(AuditTrailRecord).count() if tables_status["audit_trail"] else 0
+    except Exception:
+        pass
+
+    db_health = DatabaseHealth(
+        connected=db_connected,
+        status="ok" if (db_connected and tables_status["audit_trail"]) else "degraded",
+        tables=tables_status,
+        audit_table_ready=tables_status["audit_trail"],
+        document_count=doc_count,
+        audit_trail_count=audit_count,
+    )
+
+    # 3. Worker Pool working state
+    pool = get_ocr_pool()
+    pool_health = WorkerPoolHealth(
+        ready=pool is not None,
+        status="active" if pool is not None else "uninitialized",
+        max_workers=pool.max_workers if pool else 0,
+        is_initialized=pool is not None,
+    )
+
+    # 4. Presence and accessibility of config/vendors/
+    vendors_dir = Path("config/vendors")
+    vendors_accessible = vendors_dir.exists() and vendors_dir.is_dir()
+    vendor_files = []
+    if vendors_accessible:
+        try:
+            vendor_files = [f.stem for f in vendors_dir.glob("*.yaml")] + [f.stem for f in vendors_dir.glob("*.yml")]
+        except Exception:
+            pass
+
+    vendor_health = VendorProfilesHealth(
+        available=vendors_accessible and len(vendor_files) > 0,
+        path=str(vendors_dir),
+        accessible=vendors_accessible,
+        vendor_count=len(vendor_files),
+        vendors=sorted(vendor_files),
+    )
+
+    # 5. Connectivity status with Microinvest Delta Pro export module
+    try:
+        from invoice_core.microinvest_export import (
+            generate_microinvest_delta_xml,
+            generate_microinvest_delta_csv,
+            generate_microinvest_sklad_xml,
+        )
+        delta_pro_ready = callable(generate_microinvest_delta_xml) and callable(generate_microinvest_delta_csv)
+        sklad_ready = callable(generate_microinvest_sklad_xml)
+        microinvest_health = MicroinvestHealth(
+            module_ready=delta_pro_ready and sklad_ready,
+            status="ready" if (delta_pro_ready and sklad_ready) else "error",
+            delta_pro_available=delta_pro_ready,
+            sklad_pro_available=sklad_ready,
+            formats=["delta_xml", "sklad_xml", "delta_csv", "kontirovki"],
+        )
+    except Exception as exc:
+        microinvest_health = MicroinvestHealth(
+            module_ready=False,
+            status=f"error: {exc}",
+            delta_pro_available=False,
+            sklad_pro_available=False,
+            formats=[],
+        )
+
+    all_ok = (
+        is_ready
+        and db_connected
+        and tables_status["audit_trail"]
+        and vendors_accessible
+        and microinvest_health.module_ready
+    )
+
+    return EcosystemHealthResponse(
+        status="healthy" if all_ok else "degraded",
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        version=API_VERSION,
+        uptime_seconds=round(time.time() - SERVICE_START_TIME, 2),
+        tesseract=tess_health,
+        database=db_health,
+        worker_pool=pool_health,
+        vendor_profiles=vendor_health,
+        microinvest_export=microinvest_health,
+    )
+
