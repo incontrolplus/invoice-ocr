@@ -1,11 +1,20 @@
 """Test Suite for Continuous Learning Engine (Delta Pro Feedback Analyzer)."""
 from pathlib import Path
-from invoice_core.feedback_learner import (
+from invoice_core.delta_learner import (
     extract_corrections,
     match_operation,
     normalize_doc_number,
     persist_learned_vendor_rules,
 )
+import invoice_core.feedback_learner as legacy_feedback_learner
+
+
+def test_legacy_facade_reexport():
+    """Verify backward-compatibility facade in invoice_core.feedback_learner."""
+    assert legacy_feedback_learner.extract_corrections is extract_corrections
+    assert legacy_feedback_learner.match_operation is match_operation
+    assert legacy_feedback_learner.normalize_doc_number is normalize_doc_number
+    assert legacy_feedback_learner.persist_learned_vendor_rules is persist_learned_vendor_rules
 
 
 def test_normalize_doc_number():

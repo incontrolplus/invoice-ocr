@@ -174,13 +174,15 @@ class TestRLHFFeedbackLearning(unittest.TestCase):
 
     def test_database_process_human_feedback_audit(self):
         """Verify that update_document_corrections records human feedback and updates vendor profile."""
+        test_eik = "999000111"
+        self.created_files.append(CONFIG_VENDORS_DIR / f"learned_{test_eik}.yaml")
         # 1. Create document record in DB
         doc_id = str(uuid.uuid4())
         record = DocumentRecord(
             id=doc_id,
             file_name="invoice_test.pdf",
-            supplier_eik="114609507",
-            supplier_name="ДЕТЕЛИНА-ДП ЕООД",
+            supplier_eik=test_eik,
+            supplier_name="ТЕСТ ДЕТЕЛИНА ЕООД",
             invoice_number="0888979000",  # Incorrect phone mistakenly extracted
             tax_base=100.0,
             vat_amount=20.0,
@@ -238,6 +240,18 @@ class TestRLHFFeedbackLearning(unittest.TestCase):
         stats = get_feedback_statistics(self.db)
         self.assertGreaterEqual(stats["total_corrections_learned"], 1)
         self.assertIn("invoice_number", stats["corrections_by_field"])
+
+    def test_hitl_learner_alias(self):
+        """Verify that invoice_core.hitl_learner is an alias for feedback_learning."""
+        import invoice_core.hitl_learner as hitl
+        from invoice_core import feedback_learning as fl
+
+        self.assertIs(hitl.deduce_invoice_number_rules, fl.deduce_invoice_number_rules)
+        self.assertIs(hitl.extract_company_keywords, fl.extract_company_keywords)
+        self.assertIs(hitl.get_feedback_statistics, fl.get_feedback_statistics)
+        self.assertIs(hitl.normalize_bbox, fl.normalize_bbox)
+        self.assertIs(hitl.process_human_feedback, fl.process_human_feedback)
+        self.assertIs(hitl.update_or_create_vendor_profile, fl.update_or_create_vendor_profile)
 
 
 if __name__ == "__main__":

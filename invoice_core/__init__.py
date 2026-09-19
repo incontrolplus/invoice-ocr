@@ -7,7 +7,8 @@ from . import (
     table_recovery, financials, validation, cache, pipeline, batch, cli,
     vendor_profiles, microinvest_export, local_llm, chart_of_accounts,
     account_mapping, tax_period_validator, business_navigator_export,
-    ajur_export, worker_pool, legal_compliance,
+    ajur_export, worker_pool, legal_compliance, delta_learner,
+    feedback_learner, feedback_learning, hitl_learner,
 )
 
 from .constants import (
@@ -600,7 +601,8 @@ _SUBMODULES = [
     table_recovery, financials, validation, cache, pipeline, batch, cli,
     vendor_profiles, microinvest_export, chart_of_accounts, account_mapping,
     tax_period_validator, business_navigator_export, ajur_export, worker_pool,
-    legal_compliance,
+    legal_compliance, delta_learner, feedback_learner, feedback_learning,
+    hitl_learner,
 ]
 for _mod in _SUBMODULES:
     for _name in dir(_mod):
