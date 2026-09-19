@@ -52,6 +52,32 @@ export default {
       } else {
         const data = await resp.json();
         console.log(`[Invoice OCR Success] Processed ${data.invoices_processed || 0} invoice(s) from ${sender}`);
+
+        // Dispatch notification event to n8n workflow if configured
+        const n8nUrl = env && env.N8N_INVOICE_WEBHOOK_URL;
+        if (n8nUrl) {
+          try {
+            await fetch(n8nUrl, {
+              method: "POST",
+              headers: {
+                "User-Agent": "Cloudflare-Email-Worker/1.0",
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                sender,
+                recipient,
+                subject,
+                date,
+                message_id: messageId,
+                ocr_result: data,
+                _source_trigger: "cloudflare_email_worker",
+              }),
+            });
+            console.log(`[Invoice OCR Success] Successfully notified n8n workflow at ${n8nUrl}`);
+          } catch (n8nErr) {
+            console.warn(`[Invoice OCR -> n8n Warning] Failed notifying n8n: ${n8nErr.message}`);
+          }
+        }
       }
     } catch (err) {
       console.error(`[Invoice OCR Fatal Error] Failed delivering email to webhook: ${err.message}`);

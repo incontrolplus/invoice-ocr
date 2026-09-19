@@ -58,6 +58,32 @@ export default {
       } else {
         const data = await resp.json();
         console.log(`[Docs Classifier Success] Processed & classified ${data.documents_processed || 0} document(s) from ${sender}`);
+
+        // Dispatch notification event to n8n workflow if configured
+        const n8nUrl = env && (env.N8N_DOCS_WEBHOOK_URL || env.N8N_INVOICE_WEBHOOK_URL);
+        if (n8nUrl) {
+          try {
+            await fetch(n8nUrl, {
+              method: "POST",
+              headers: {
+                "User-Agent": "Cloudflare-Docs-Email-Worker/1.0",
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                sender,
+                recipient,
+                subject,
+                date,
+                message_id: messageId,
+                docs_result: data,
+                _source_trigger: "cloudflare_docs_worker",
+              }),
+            });
+            console.log(`[Docs Classifier Success] Successfully notified n8n workflow at ${n8nUrl}`);
+          } catch (n8nErr) {
+            console.warn(`[Docs Classifier -> n8n Warning] Failed notifying n8n: ${n8nErr.message}`);
+          }
+        }
       }
     } catch (err) {
       console.error(`[Docs Classifier Fatal Error] Failed delivering email to webhook: ${err.message}`);

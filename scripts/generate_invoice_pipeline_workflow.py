@@ -164,11 +164,11 @@ msg += `📦 *TRANSFER.LOG:* \`${transferLogSize} B\` | *ldb:* \`${transferLdbSi
 
 const inlineKeyboard = [
   [
-    { text: "📥 Свали TRANSFER.LOG", url: `http://100.83.83.8:8000/api/v1/accounting/transfer-log/${docId}` },
-    { text: "📦 Свали ZIP Пакет", url: `http://100.83.83.8:8000/api/v1/accounting/package/${docId}` }
+    { text: "📥 Свали TRANSFER.LOG", url: `https://ocr.openbalancer.com/api/v1/accounting/transfer-log/${docId}` },
+    { text: "📦 Свали ZIP Пакет", url: `https://ocr.openbalancer.com/api/v1/accounting/package/${docId}` }
   ],
   [
-    { text: "🌐 Supabase Рекорд", url: `http://100.83.83.8:8002` }
+    { text: "🌐 Supabase Рекорд", url: `https://supabase.openbalancer.com` }
   ]
 ];
 
@@ -211,6 +211,7 @@ return [{
             "type": "n8n-nodes-base.emailReadImap",
             "typeVersion": 2,
             "position": [100, 420],
+            "disabled": True,
             "credentials": {
                 "imap": {
                     "id": "38gUB4RDJSyDDWUf",
@@ -249,7 +250,7 @@ return [{
         {
             "parameters": {
                 "method": "POST",
-                "url": "http://100.83.83.8:8000/api/v1/ingest/docs-email?token=dev_webhook_secret",
+                "url": "https://ocr.openbalancer.com/api/v1/ingest/docs-email?token=dev_webhook_secret",
                 "sendBody": True,
                 "specifyBody": "json",
                 "jsonBody": "={{ JSON.stringify($json) }}",
